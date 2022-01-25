@@ -2,8 +2,13 @@ import setuptools
 import subprocess
 import sys
 
+python_version: str = '3' if sys.platform.find('win') != 0 else ''
+
 # Install jupyter notebook extensions:
-subprocess.run(['python{} -m pip install jupyter_contrib_nbextensions && jupyter contrib nbextension install'.format('3' if sys.platform.find('win') != 0 else '')], shell=True)
+subprocess.run([f'python{python_version} -m pip install jupyter_contrib_nbextensions && jupyter contrib nbextension install'], shell=True)
+
+# Install keras-contrib:
+subprocess.run([f'python{python_version} -m pip install git+https://www.github.com/keras-team/keras-contrib.git'], shell=True)
 
 with open('README.md', 'r') as _read_me:
     long_description = _read_me.read()

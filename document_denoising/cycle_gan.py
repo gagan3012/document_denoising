@@ -33,16 +33,12 @@ class CycleGAN:
     Class for building and training cycle-gan model
     """
     def __init__(self,
-                 file_path_train_clean_data: str,
-                 file_path_train_noisy_data: str,
-                 file_path_test_clean_data: str = None,
-                 file_path_test_noisy_data: str = None,
+                 file_path_train_clean_images: str,
+                 file_path_train_noisy_images: str,
                  n_channels: int = 1,
                  image_height: int = 256,
                  image_width: int = 256,
-                 n_epoch: int = 300,
                  learning_rate: float = 0.0002,
-                 batch_size: int = 1,
                  initializer: str = 'xavier',
                  start_n_filters_discriminator: int = 64,
                  max_n_filters_discriminator: int = 512,
@@ -65,16 +61,12 @@ class CycleGAN:
                  dropout_rate_moe_fc_classifier: float = 0.0,
                  ):
         """
-        :param file_path_train_clean_data:
-        :param file_path_train_noisy_data:
-        :param file_path_test_clean_data:
-        :param file_path_test_noisy_data:
+        :param file_path_train_clean_images:
+        :param file_path_train_noisy_images:
         :param n_channels:
         :param image_height:
         :param image_width:
-        :param n_epoch:
         :param learning_rate:
-        :param batch_size:
         :param initializer:
         :param start_n_filters_discriminator:
         :param max_n_filters_discriminator:
@@ -96,17 +88,16 @@ class CycleGAN:
         :param n_noise_types_moe_fc_classifier:
         :param dropout_rate_moe_fc_classifier:
         """
-        if len(file_path_train_clean_data) == 0:
+        if len(file_path_train_clean_images) == 0:
             raise CycleGANException('File path for clean training document images is empty')
-        if len(file_path_train_noisy_data) == 0:
+        if len(file_path_train_noisy_images) == 0:
             raise CycleGANException('File path for noisy training document images is empty')
-        self.file_path_train_clean_data: str = file_path_train_clean_data
-        self.file_path_train_noisy_data: str = file_path_train_noisy_data
+        self.file_path_train_clean_data: str = file_path_train_clean_images
+        self.file_path_train_noisy_data: str = file_path_train_noisy_images
         self.n_channels: int = n_channels
         self.image_height: int = image_height
         self.image_width: int = image_width
         self.image_shape: Input = Input(shape=(self.image_height, self.image_width, self.n_channels))
-        self.n_epoch: int = n_epoch
         self.learning_rate: float = learning_rate
         self.optimizer: Adam = Adam(learning_rate=learning_rate,
                                     beta_1=0.5,
@@ -138,7 +129,6 @@ class CycleGAN:
             self.initializer: keras.initializers.initializers_v2 = RandomUniform(minval=-0.05, maxval=0.05, seed=1234)
         elif initializer == 'zeros':
             self.initializer: keras.initializers.initializers_v2 = Zeros()
-        self.batch_size: int = batch_size
         self.start_n_filters_discriminator: int = start_n_filters_discriminator
         self.max_n_filters_discriminator: int = max_n_filters_discriminator
         self.n_conv_layers_discriminator: int = n_conv_layers_discriminator
@@ -164,10 +154,10 @@ class CycleGAN:
 
     def _build_discriminator(self) -> Model:
         """
-        Build discriminator
+        Build discriminator network
 
         :return: Model
-            Compiled discriminator model
+            Compiled discriminator network model
         """
         d = Conv2D(filters=64, kernel_size=(4, 4), strides=(2, 2), padding='same', kernel_initializer=self.initializer)(self.image_shape)
         d = LeakyReLU(alpha=0.2)(d)
@@ -187,3 +177,62 @@ class CycleGAN:
         model = Model(inputs=self.image_shape, outputs=patch_out)
         model.compile(loss='mse', optimizer=self.optimizer, loss_weights=[0.5])
         return model
+
+    def _build_generator(self) -> Model:
+        """
+        Build generator network
+
+        :return: Model
+            Generator network model
+        """
+        pass
+
+    def _resnet_block(self):
+        """
+        Residual network
+        """
+        pass
+
+    def _u_net(self):
+        """
+        U network
+        """
+        pass
+
+    def inference(self,
+                  file_path_noisy_images: str,
+                  file_path_clean_images: str = None,
+                  ):
+        """
+        Clean noisy document images based on training
+
+        :param file_path_noisy_images: str
+            Complete file path of noisy images to clean
+
+        :param file_path_clean_images: str
+            Complete file path of clean images for evaluation
+        """
+        pass
+
+    def train(self,
+              model_output_path: str,
+              n_epoch: int = 300,
+              batch_size: int = 1,
+              checkpoint_epoch_interval: int = 5
+              ):
+        """
+        Train cycle-gan model
+
+        :param model_output_path: str
+            Complete file path of the model output
+
+        :param n_epoch: int
+            Number of epochs to train
+
+        :param batch_size: int
+            Batch size
+
+        :param checkpoint_epoch_interval: int
+            Number of epoch intervals for saving model checkpoint
+        """
+        pass

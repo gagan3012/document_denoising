@@ -337,7 +337,7 @@ class CycleGAN:
         _d = self.normalizer(_d)
         return ReLU(max_value=None, negative_slope=0, threshold=0)(_d)
 
-    def _convolutional_layer_up_sampling(self, input_layer, skip_layer, n_filters: int):
+    def _convolutional_layer_generator_up_sampling(self, input_layer, skip_layer, n_filters: int):
         """
         Convolutional layer for up sampling (u-net)
 

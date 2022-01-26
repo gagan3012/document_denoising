@@ -12,6 +12,7 @@ from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D, Conv2DTranspose
 from keras.models import Sequential, Model
 from tensorflow.keras.optimizers import Adam
+from .utils import ImageLoader
 
 import datetime
 import numpy as np
@@ -251,6 +252,20 @@ class CycleGAN:
         self.dropout_rate_moe_fc_gated_net: float = dropout_rate_moe_fc_gated_net
         self.n_noise_types_moe_fc_classifier: int = n_noise_types_moe_fc_classifier
         self.dropout_rate_moe_fc_classifier: float = dropout_rate_moe_fc_classifier
+        self.discriminator_patch: tuple = None
+        self.discriminator_A: Model = None
+        self.discriminator_B: Model = None
+        self.generator_A: Model = None
+        self.generator_B: Model = None
+        self.combined_model: Model = None
+        # Cycle-consistency loss:
+        self.lambda_cycle: float = 10.0
+        # Identity loss:
+        self.lambda_id: float = 0.1 * self.lambda_cycle
+        # Load Image Data:
+        self.image_loader: ImageLoader = ImageLoader(file_path_clean=self.file_path_train_clean_data)
+        # Build Cycle-GAN Network:
+        self._build_cycle_gan_network()
 
     def _build_discriminator(self) -> Model:
         """
@@ -286,9 +301,77 @@ class CycleGAN:
                             padding='same',
                             kernel_initializer=self.initializer
                             )(_d)
-        _model = Model(inputs=self.image_shape, outputs=_patch_out)
-        _model.compile(loss='mse', optimizer=self.optimizer, loss_weights=[0.5])
-        return _model
+        return Model(inputs=self.image_shape, outputs=_patch_out)
+
+    def _build_cycle_gan_network(self):
+        """
+        Build complete cycle-gan network
+        """
+        # Calculate output shape of Discriminator (PatchGAN):
+        patch = int(self.image_height / 2 ** 4)
+        self.discriminator_patch = (patch, patch, 1)
+        # Build and compile the discriminators:
+        self.discriminator_A = self._build_discriminator()
+        self.discriminator_B = self._build_discriminator()
+        self.discriminator_A.compile(loss='mse',
+                                     optimizer=self.optimizer,
+                                     metrics=['accuracy'],
+                                     loss_weights=[0.5]
+                                     )
+        self.discriminator_B.compile(loss='mse',
+                                     optimizer=self.optimizer,
+                                     metrics=['accuracy'],
+                                     loss_weights=[0.5]
+                                     )
+        # Build the generators:
+        self.generator_A = self._build_generator()
+        self.generator_B = self._build_generator()
+        # Input images from both domains:
+        _image_A: Input = Input(shape=self.image_shape)
+        _image_B: Input = Input(shape=self.image_shape)
+        # Translate images to the other domain:
+        _fake_B = self.generator_A(_image_A)
+        _fake_A = self.generator_B(_image_B)
+        # Translate images back to original domain:
+        _reconstruction_A = self.generator_B(_fake_B)
+        _reconstruction_B = self.generator_A(_fake_A)
+        # Identity mapping of images:
+        _image_id_A = self.generator_B(_image_A)
+        _image_id_B = self.generator_A(_image_B)
+        # For the combined model we will only train the generators:
+        self.discriminator_A.trainable = False
+        self.discriminator_B.trainable = False
+        # Discriminators determine validity of translated images:
+        _valid_A = self.discriminator_A(_fake_A)
+        _valid_B = self.discriminator_B(_fake_B)
+        # Combined model to train generators to fool discriminators:
+        self.combined_model = Model(inputs=[_image_A,
+                                            _image_B
+                                            ],
+                                    outputs=[_valid_A,
+                                             _valid_B,
+                                             _reconstruction_A,
+                                             _reconstruction_B,
+                                             _image_id_A,
+                                             _image_id_B
+                                             ]
+                                    )
+        self.combined_model.compile(loss=['mse',
+                                          'mse',
+                                          'mae',
+                                          'mae',
+                                          'mae',
+                                          'mae'
+                                          ],
+                                    loss_weights=[1,
+                                                  1,
+                                                  self.lambda_cycle,
+                                                  self.lambda_cycle,
+                                                  self.lambda_id,
+                                                  self.lambda_id
+                                                  ],
+                                    optimizer=self.optimizer
+                                    )
 
     def _build_generator(self) -> Model:
         """

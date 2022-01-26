@@ -40,6 +40,7 @@ class CycleGAN:
                  image_width: int = 256,
                  learning_rate: float = 0.0002,
                  initializer: str = 'xavier',
+                 batch_size: int = 1,
                  start_n_filters_discriminator: int = 64,
                  max_n_filters_discriminator: int = 512,
                  n_conv_layers_discriminator: int = 4,
@@ -47,8 +48,8 @@ class CycleGAN:
                  start_n_filters_generator: int = 32,
                  max_n_filters_generator: int = 512,
                  generator_type: str = 'u',
+                 n_resnet_blocks: int = 9,
                  n_conv_layers_generator_u_net: int = 4,
-                 n_conv_layers_generator_res_net: int = 6,
                  dropout_rate_generator_down_sampling: float = 0.0,
                  dropout_rate_generator_up_sampling: float = 0.0,
                  include_moe_layers: bool = False,
@@ -61,32 +62,93 @@ class CycleGAN:
                  dropout_rate_moe_fc_classifier: float = 0.0,
                  ):
         """
-        :param file_path_train_clean_images:
-        :param file_path_train_noisy_images:
-        :param n_channels:
-        :param image_height:
-        :param image_width:
-        :param learning_rate:
-        :param initializer:
-        :param start_n_filters_discriminator:
-        :param max_n_filters_discriminator:
-        :param n_conv_layers_discriminator:
-        :param dropout_rate_discriminator:
-        :param start_n_filters_generator:
-        :param max_n_filters_generator:
-        :param generator_type:
-        :param n_conv_layers_generator_u_net:
-        :param n_conv_layers_generator_res_net:
-        :param dropout_rate_generator_down_sampling:
-        :param dropout_rate_generator_up_sampling:
-        :param include_moe_layers:
-        :param n_conv_layers_moe_embedder:
-        :param dropout_rate_moe_embedder:
-        :param n_hidden_layers_moe_fc_gated_net:
-        :param n_hidden_layers_moe_fc_classifier:
-        :param dropout_rate_moe_fc_gated_net:
-        :param n_noise_types_moe_fc_classifier:
-        :param dropout_rate_moe_fc_classifier:
+        :param file_path_train_clean_images: str
+            Complete file path of clean images for training
+
+        :param file_path_train_noisy_images: str
+            Complete file path of noisy images for training
+
+        :param n_channels: int
+            Number of image channels
+                -> 1: gray
+                -> 3: color (rbg)
+
+        :param image_height: int
+            Height of the image
+
+        :param image_width: int
+            Width of the image
+
+        :param learning_rate: float
+            Learning rate
+
+        :param initializer: str
+            Name of the initializer used in convolutional layers
+                -> constant: Constant value 0
+                -> he_normal:
+
+        :param batch_size: int
+            Batch size
+
+        :param start_n_filters_discriminator: int
+            Number of filters used in first convolutional layer in discriminator network
+
+        :param max_n_filters_discriminator: int
+            Maximum number of filter used in all convolutional layers in discriminator network
+
+        :param n_conv_layers_discriminator: int
+            Number of convolutional layers in discriminator network
+
+        :param dropout_rate_discriminator: float
+            Dropout rate used after each convolutional layer in discriminator network
+
+        :param start_n_filters_generator: int
+            Number of filters used in first convolutional layer in generator network
+
+        :param max_n_filters_generator: int
+            Maximum number of filter used in all convolutional layers in generator network
+
+        :param generator_type: str
+            Abbreviated name of the type of the generator
+                -> u: U-Network architecture
+                -> resnet: Residual network architecture
+
+        :param n_resnet_blocks: int
+            Number of residual network blocks to use
+                Common: -> 6, 9
+
+        :param n_conv_layers_generator_u_net: int
+            Number of convolutional layers in generator network with u-net architecture
+
+        :param dropout_rate_generator_down_sampling: float
+            Dropout rate used after each convolutional layer in generator down-sampling network
+
+        :param dropout_rate_generator_up_sampling: float
+            Dropout rate used after each convolutional layer in generator up-sampling network
+
+        :param include_moe_layers: bool
+            Whether to use mixture of expert layers in residual network architecture
+
+        :param n_conv_layers_moe_embedder: int
+            Number of convolutional layers in discriminator network
+
+        :param dropout_rate_moe_embedder: float
+            Dropout rate used after each convolutional layer in mixture of expert embedder network
+
+        :param n_hidden_layers_moe_fc_gated_net: int
+            Number of hidden layers of the fully connected gated network used to process mixture of expert embedding output
+
+        :param n_hidden_layers_moe_fc_classifier: int
+            Number of hidden layers of the fully connected gated network used to classify mixture of expert embedding output (noise type)
+
+        :param dropout_rate_moe_fc_gated_net: float
+            Dropout rate used after each convolutional layer in mixture of expert fully connected gated network
+
+        :param n_noise_types_moe_fc_classifier: int
+            Number of classes (noise types) to classify
+
+        :param dropout_rate_moe_fc_classifier: float
+            Dropout rate used after each convolutional layer in mixture of expert fully connected classification network
         """
         if len(file_path_train_clean_images) == 0:
             raise CycleGANException('File path for clean training document images is empty')
@@ -94,7 +156,10 @@ class CycleGAN:
             raise CycleGANException('File path for noisy training document images is empty')
         self.file_path_train_clean_data: str = file_path_train_clean_images
         self.file_path_train_noisy_data: str = file_path_train_noisy_images
-        self.n_channels: int = n_channels
+        if 1 < n_channels < 4:
+            self.n_channels: int = 3
+        else:
+            self.n_channels: int = 1
         self.image_height: int = image_height
         self.image_width: int = image_width
         self.image_shape: Input = Input(shape=(self.image_height, self.image_width, self.n_channels))
@@ -140,7 +205,7 @@ class CycleGAN:
         else:
             self.generator_type: str = 'u'
         self.n_conv_layers_generator_u_net: int = n_conv_layers_generator_u_net
-        self.n_conv_layers_generator_res_net: int = n_conv_layers_generator_res_net
+        self.n_resnet_blocks: int = n_resnet_blocks if n_resnet_blocks > 0 else 9
         self.dropout_rate_generator_down_sampling: float = dropout_rate_generator_down_sampling if dropout_rate_generator_down_sampling >= 0 else 0.0
         self.dropout_rate_generator_up_sampling: float = dropout_rate_generator_up_sampling if dropout_rate_generator_up_sampling >= 0 else 0.0
         self.include_moe_layers: bool = include_moe_layers
@@ -187,6 +252,18 @@ class CycleGAN:
         """
         pass
 
+    def _convolutional_layer_down_sampling(self):
+        """
+        Convolutional layer for down sampling (u-net)
+        """
+        pass
+
+    def _convolutional_layer_up_sampling(self, input_layer, skip_layer, n_filters: int):
+        """
+        Convolutional layer for up sampling (u-net)
+        """
+        pass
+
     def _resnet_block(self):
         """
         Residual network
@@ -217,7 +294,6 @@ class CycleGAN:
     def train(self,
               model_output_path: str,
               n_epoch: int = 300,
-              batch_size: int = 1,
               checkpoint_epoch_interval: int = 5
               ):
         """
@@ -228,9 +304,6 @@ class CycleGAN:
 
         :param n_epoch: int
             Number of epochs to train
-
-        :param batch_size: int
-            Batch size
 
         :param checkpoint_epoch_interval: int
             Number of epoch intervals for saving model checkpoint

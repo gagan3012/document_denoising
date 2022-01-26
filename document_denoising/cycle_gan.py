@@ -170,6 +170,41 @@ class CycleGAN:
                                     epsilon=1e-7,
                                     amsgrad=False
                                     )
+        self.batch_size: int = batch_size if batch_size > 0 else 1
+        if self.batch_size == 1:
+            self.normalizer = InstanceNormalization(axis=-1,
+                                                    epsilon=1e-3,
+                                                    center=True,
+                                                    scale=True,
+                                                    beta_initializer='zeros',
+                                                    gamma_initializer='ones',
+                                                    beta_regularizer=None,
+                                                    gamma_regularizer=None,
+                                                    beta_constraint=None,
+                                                    gamma_constraint=None
+                                                    )
+        else:
+            self.normalizer = BatchNormalization(axis=-1,
+                                                 momentum=0.99,
+                                                 epsilon=1e-3,
+                                                 center=True,
+                                                 scale=True,
+                                                 beta_initializer='zeros',
+                                                 gamma_initializer='ones',
+                                                 moving_mean_initializer='zeros',
+                                                 moving_variance_initializer='ones',
+                                                 beta_regularizer=None,
+                                                 gamma_regularizer=None,
+                                                 beta_constraint=None,
+                                                 gamma_constraint=None,
+                                                 renorm=False,
+                                                 renorm_clipping=None,
+                                                 renorm_momentum=0.99,
+                                                 fused=None,
+                                                 trainable=True,
+                                                 virtual_batch_size=None,
+                                                 adjustment=None
+                                                 )
         if initializer == 'constant':
             self.initializer: keras.initializers.initializers_v2 = Constant(value=0)
         elif initializer == 'he_normal':
@@ -224,24 +259,36 @@ class CycleGAN:
         :return: Model
             Compiled discriminator network model
         """
-        d = Conv2D(filters=64, kernel_size=(4, 4), strides=(2, 2), padding='same', kernel_initializer=self.initializer)(self.image_shape)
-        d = LeakyReLU(alpha=0.2)(d)
-        d = Conv2D(filters=128, kernel_size=(4, 4), strides=(2, 2), padding='same', kernel_initializer=self.initializer)(d)
-        d = InstanceNormalization(axis=-1)(d)
-        d = LeakyReLU(alpha=0.2)(d)
-        d = Conv2D(filters=256, kernel_size=(4, 4), strides=(2, 2), padding='same', kernel_initializer=self.initializer)(d)
-        d = InstanceNormalization(axis=-1)(d)
-        d = LeakyReLU(alpha=0.2)(d)
-        d = Conv2D(filters=512, kernel_size=(4, 4), strides=(2, 2), padding='same', kernel_initializer=self.initializer)(d)
-        d = InstanceNormalization(axis=-1)(d)
-        d = LeakyReLU(alpha=0.2)(d)
-        d = Conv2D(filters=512, kernel_size=(4, 4), padding='same', kernel_initializer=self.initializer)(d)
-        d = InstanceNormalization(axis=-1)(d)
-        d = LeakyReLU(alpha=0.2)(d)
-        patch_out = Conv2D(filters=1, kernel_size=(4, 4), padding='same', kernel_initializer=self.initializer)(d)
-        model = Model(inputs=self.image_shape, outputs=patch_out)
-        model.compile(loss='mse', optimizer=self.optimizer, loss_weights=[0.5])
-        return model
+        _n_filters: int = self.start_n_filters_discriminator
+        _d = Conv2D(filters=_n_filters,
+                    kernel_size=(4, 4),
+                    strides=(2, 2),
+                    padding='same',
+                    kernel_initializer=self.initializer
+                    )(self.image_shape)
+        _d = self.normalizer(_d)
+        _d = LeakyReLU(alpha=0.2)(_d)
+        for _ in range(0, self.n_conv_layers_discriminator - 1, 1):
+            if _n_filters < self.max_n_filters_discriminator:
+                _n_filters *= 2
+            _d = self._convolutional_layer_discriminator(input_layer=_d, n_filters=_n_filters)
+        _d = Conv2D(filters=_n_filters,
+                    kernel_size=(4, 4),
+                    strides=(1, 1),
+                    padding='same',
+                    kernel_initializer=self.initializer
+                    )(_d)
+        _d = self.normalizer(_d)
+        _d = LeakyReLU(alpha=0.2)(_d)
+        _patch_out = Conv2D(filters=1,
+                            kernel_size=(4, 4),
+                            strides=(1, 1),
+                            padding='same',
+                            kernel_initializer=self.initializer
+                            )(_d)
+        _model = Model(inputs=self.image_shape, outputs=_patch_out)
+        _model.compile(loss='mse', optimizer=self.optimizer, loss_weights=[0.5])
+        return _model
 
     def _build_generator(self) -> Model:
         """
@@ -252,11 +299,24 @@ class CycleGAN:
         """
         pass
 
-    def _convolutional_layer_discriminator(self):
+    def _convolutional_layer_discriminator(self, input_layer, n_filters: int):
         """
         Convolutional layer for discriminator
+
+        :param input_layer:
+            Network layer to process in the first convolutional layer
+
+        :param n_filters: int
+            Number of filters in the convolutional layer
         """
-        pass
+        _d = Conv2D(filters=n_filters,
+                    kernel_size=(4, 4),
+                    strides=(2, 2),
+                    padding='same',
+                    kernel_initializer=self.initializer
+                    )(input_layer)
+        _d = self.normalizer(_d)
+        return LeakyReLU(alpha=0.2)(_d)
 
     def _convolutional_layer_down_sampling(self):
         """
@@ -267,6 +327,15 @@ class CycleGAN:
     def _convolutional_layer_up_sampling(self, input_layer, skip_layer, n_filters: int):
         """
         Convolutional layer for up sampling (u-net)
+
+        :param input_layer:
+            Network layer to process in the first convolutional layer
+
+        :param skip_layer:
+            Network layer to concatenate with up-sampling output
+
+        :param n_filters: int
+            Number of filters in the (transposed) convolutional layer
         """
         u = UpSampling2D(size=2)(input_layer)
         u = Conv2DTranspose(filters=n_filters,
@@ -278,7 +347,7 @@ class CycleGAN:
                             )(u)
         if self.dropout_rate_generator_up_sampling > 0:
             u = Dropout(rate=self.dropout_rate_generator_up_sampling, seed=1234)(u)
-        u = InstanceNormalization()(u)
+        u = self.normalizer(u)
         return Concatenate()([u, skip_layer])
 
     def _resnet_block(self):

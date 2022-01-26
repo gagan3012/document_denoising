@@ -128,28 +128,28 @@ class CycleGAN:
             Dropout rate used after each convolutional layer in generator up-sampling network
 
         :param include_moe_layers: bool
-            Whether to use mixture of expert layers in residual network architecture
+            Whether to use mixture of experts layers in residual network architecture
 
         :param n_conv_layers_moe_embedder: int
             Number of convolutional layers in discriminator network
 
         :param dropout_rate_moe_embedder: float
-            Dropout rate used after each convolutional layer in mixture of expert embedder network
+            Dropout rate used after each convolutional layer in mixture of experts embedder network
 
         :param n_hidden_layers_moe_fc_gated_net: int
-            Number of hidden layers of the fully connected gated network used to process mixture of expert embedding output
+            Number of hidden layers of the fully connected gated network used to process mixture of experts embedding output
 
         :param n_hidden_layers_moe_fc_classifier: int
-            Number of hidden layers of the fully connected gated network used to classify mixture of expert embedding output (noise type)
+            Number of hidden layers of the fully connected gated network used to classify mixture of experts embedding output (noise type)
 
         :param dropout_rate_moe_fc_gated_net: float
-            Dropout rate used after each convolutional layer in mixture of expert fully connected gated network
+            Dropout rate used after each convolutional layer in mixture of experts fully connected gated network
 
         :param n_noise_types_moe_fc_classifier: int
             Number of classes (noise types) to classify
 
         :param dropout_rate_moe_fc_classifier: float
-            Dropout rate used after each convolutional layer in mixture of expert fully connected classification network
+            Dropout rate used after each convolutional layer in mixture of experts fully connected classification network
         """
         if len(file_path_train_clean_images) == 0:
             raise CycleGANException('File path for clean training document images is empty')
@@ -272,7 +272,7 @@ class CycleGAN:
         Build discriminator network
 
         :return: Model
-            Compiled discriminator network model
+            Discriminator network model
         """
         _n_filters: int = self.start_n_filters_discriminator
         _d = Conv2D(filters=_n_filters,
@@ -308,8 +308,9 @@ class CycleGAN:
         Build complete cycle-gan network
         """
         # Calculate output shape of Discriminator (PatchGAN):
-        patch = int(self.image_height / 2 ** 4)
-        self.discriminator_patch = (patch, patch, 1)
+        _patch_height: int = int(self.image_height / 2 ** 4)
+        _patch_width: int = int(self.image_width / 2 ** 4)
+        self.discriminator_patch = (_patch_height, _patch_width, 1)
         # Build and compile the discriminators:
         self.discriminator_A = self._build_discriminator()
         self.discriminator_B = self._build_discriminator()
@@ -577,6 +578,19 @@ class CycleGAN:
         # concatenate merge channel-wise with input layer
         return Concatenate()([_r, input_layer])
 
+    def _save_models(self, model_output_path: str):
+        """
+        Save cycle-gan models
+
+        :param model_output_path: str
+            Complete file path of the model output
+        """
+        self.generator_A.save(filepath=os.path.join(model_output_path, 'generator_A.h5'))
+        self.generator_B.save(filepath=os.path.join(model_output_path, 'generator_B.h5'))
+        self.discriminator_A.save(filepath=os.path.join(model_output_path, 'discriminator_A.h5'))
+        self.discriminator_B.save(filepath=os.path.join(model_output_path, 'discriminator_B.h5'))
+        self.combined_model.save(filepath=os.path.join(model_output_path, 'combined_generator_model.h5'))
+
     def _u_net(self) -> Model:
         """
         U-network
@@ -643,7 +657,7 @@ class CycleGAN:
               checkpoint_epoch_interval: int = 5
               ):
         """
-        Train cycle-gan model
+        Train cycle-gan models
 
         :param model_output_path: str
             Complete file path of the model output
@@ -654,4 +668,46 @@ class CycleGAN:
         :param checkpoint_epoch_interval: int
             Number of epoch intervals for saving model checkpoint
         """
-        pass
+        _t0: datetime = datetime.datetime.now()
+        # Adversarial loss ground truths:
+        _valid: np.array = np.ones((self.batch_size, ) + self.discriminator_A)
+        _fake: np.array = np.zeros((self.batch_size, ) + self.discriminator_B)
+        for epoch in range(n_epoch):
+            for batch_i, (images_A, images_B) in enumerate(self.image_loader.load_batch(self.batch_size)):
+                # Translate images to opposite domain:
+                _fake_B = self.generator_A.predict(images_A)
+                _fake_A = self.generator_B.predict(images_B)
+                # Train the discriminators (original images = real / translated = Fake):
+                _discriminator_loss_real_A = self.discriminator_A.train_on_batch(images_A, _valid)
+                _discriminator_loss_fake_A = self.discriminator_A.train_on_batch(_fake_A, _fake)
+                _discriminator_loss_A = 0.5 * np.add(_discriminator_loss_real_A, _discriminator_loss_fake_A)
+                _discriminator_loss_real_B = self.discriminator_B.train_on_batch(images_B, _valid)
+                _discriminator_loss_fake_B = self.discriminator_B.train_on_batch(_fake_B, _fake)
+                _discriminator_loss_B = 0.5 * np.add(_discriminator_loss_real_B, _discriminator_loss_fake_B)
+                # Total discriminator loss:
+                _discriminator_loss = 0.5 * np.add(_discriminator_loss_A, _discriminator_loss_B)
+                # Train the generators:
+                _generator_loss = self.combined_model.train_on_batch([images_A,
+                                                                      images_B
+                                                                      ],
+                                                                     [_valid,
+                                                                      _valid,
+                                                                      images_A,
+                                                                      images_B,
+                                                                      images_A,
+                                                                      images_B
+                                                                      ]
+                                                                     )
+                _elapsed_time: datetime = datetime.datetime.now() - _t0
+
+                # Print training progress:
+                _print_epoch_status: str = f'[Epoch: {epoch}/{n_epoch}]'
+                _print_batch_status: str = f'[Batch: {batch_i}/{self.image_loader.n_batches}]'
+                _print_discriminator_loss_status: str = f'[D loss: {_discriminator_loss[0]}, acc: {100 * _discriminator_loss[1]}]'
+                _print_generator_loss_status: str = f'[G loss: {_generator_loss[0]}, adv: {np.mean(_generator_loss[1:3])}, recon: {np.mean(_generator_loss[3:5])}, id: {np.mean(_generator_loss[5:6])}]'
+                print(_print_epoch_status, _print_batch_status, _print_discriminator_loss_status, _print_generator_loss_status, f'time: {_elapsed_time}')
+            # Save checkpoint:
+            if (epoch % checkpoint_epoch_interval == 0) and (epoch > 0):
+                self._save_models(model_output_path=model_output_path)
+        # Save fully trained models:
+        self._save_models(model_output_path=model_output_path)

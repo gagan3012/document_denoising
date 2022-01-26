@@ -318,11 +318,24 @@ class CycleGAN:
         _d = self.normalizer(_d)
         return LeakyReLU(alpha=0.2)(_d)
 
-    def _convolutional_layer_down_sampling(self):
+    def _convolutional_layer_generator_down_sampling(self, input_layer, n_filters: int):
         """
         Convolutional layer for down sampling (u-net)
+
+        :param input_layer:
+            Network layer to process in the first convolutional layer
+
+        :param n_filters: int
+            Number of filters in the convolutional layer
         """
-        pass
+        _d = Conv2D(filters=n_filters,
+                    kernel_size=(3, 3),
+                    strides=(2, 2),
+                    padding='same',
+                    kernel_initializer=self.initializer
+                    )(input_layer)
+        _d = self.normalizer(_d)
+        return ReLU(max_value=None, negative_slope=0, threshold=0)(_d)
 
     def _convolutional_layer_up_sampling(self, input_layer, skip_layer, n_filters: int):
         """

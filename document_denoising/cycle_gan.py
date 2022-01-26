@@ -300,7 +300,42 @@ class CycleGAN:
         if self.generator_type == 'u':
             return self._u_net()
         elif self.generator_type == 'res':
-            pass
+            # embedder layer
+            if self.include_moe_layers:
+                _embedder = self._embedder()
+            else:
+                _embedder = None
+            _n_filters: int = self.start_n_filters_generator
+            _g = Conv2D(filters=_n_filters,
+                        kernel_size=(7, 7),
+                        strides=(1, 1),
+                        padding='same',
+                        kernel_initializer=self.initializer
+                        )(self.image_shape)
+            _g = self.normalizer(_g)
+            _g = ReLU(max_value=None, negative_slope=0, threshold=0)(_g)
+            for i in range(0, self.n_resnet_blocks, 1):
+                if i < (self.n_resnet_blocks / 2):
+                    # Down-Sampling:
+                    if _n_filters < self.max_n_filters_generator:
+                        _n_filters *= 2
+                else:
+                    # Up-Sampling:
+                    if _n_filters > self.start_n_filters_generator:
+                        _n_filters //= 2
+                _g = self._resnet_block(input_layer=_g, n_filters=_n_filters)
+                if self.include_moe_layers:
+                    # gated network
+                    _g = self._gated_network(input_layer=_embedder, units=64)
+            _g = Conv2D(filters=1,
+                        kernel_size=(7, 7),
+                        strides=(1, 1),
+                        padding='same',
+                        kernel_initializer=self.initializer
+                        )(_g)
+            _g = self.normalizer(_g)
+            _fake_image = Activation('tanh')(_g)
+            return Model(self.image_shape, _fake_image)
 
     def _convolutional_layer_discriminator(self, input_layer, n_filters: int):
         """

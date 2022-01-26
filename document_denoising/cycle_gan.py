@@ -411,6 +411,24 @@ class CycleGAN:
             _fc = Dropout(rate=self.dropout_rate_moe_fc_gated_net)(_fc)
         return Concatenate()([input_layer, _fc])
 
+    def _moe_classifier(self, embedding_layer):
+        """
+        Classification layer of the mixture of experts embedding
+
+        :param embedding_layer:
+            Embedding input
+
+        :return:
+            Probability tensor
+        """
+        _clf_model = Model(embedding_layer)
+        _clf_model.append(Dense(units=64, input_dim=256, activation='relu'))
+        _clf_model.append(Dense(units=32, activation='relu'))
+        _clf_model.append(Dense(units=16, activation='relu'))
+        _clf_model.append(Dense(units=self.n_noise_types_moe_fc_classifier, activation='softmax'))
+        _clf_model.compile(optimizer='adam', metrics=['cross_entropy'])
+        return _clf_model.predict(x=embedding_layer, batch_size=self.batch_size)
+
     def _resnet_block(self):
         """
         Residual network block

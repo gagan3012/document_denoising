@@ -402,6 +402,15 @@ class CycleGAN:
         g = Concatenate()([_e, self.image_shape])
         return g
 
+    def _gated_network(self, input_layer, units: int = 64):
+        """
+        Fully connected gated network layer (part of the mixture of experts architecture)
+        """
+        _fc = Dense(units=units, input_dim=self.image_height, activation='relu')(input_layer)
+        if self.dropout_rate_moe_fc_gated_net > 0:
+            _fc = Dropout(rate=self.dropout_rate_moe_fc_gated_net)(_fc)
+        return Concatenate()([input_layer, _fc])
+
     def _resnet_block(self):
         """
         Residual network block

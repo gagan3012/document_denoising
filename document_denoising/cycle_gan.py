@@ -365,15 +365,54 @@ class CycleGAN:
 
     def _resnet_block(self):
         """
-        Residual network
+        Residual network block
         """
         pass
 
-    def _u_net(self):
+    def _u_net(self) -> Model:
         """
-        U network
+        U-network
+
+        :return: Model
+            U-network model
         """
-        pass
+        _n_filters: int = self.start_n_filters_generator
+        _g = Conv2D(filters=_n_filters,
+                    kernel_size=(3, 3),
+                    strides=(2, 2),
+                    padding='same',
+                    kernel_initializer=self.initializer
+                    )(self.image_shape)
+        _g = self.normalizer(_g)
+        _g = ReLU(max_value=None, negative_slope=0, threshold=0)(_g)
+        _u_net_layers: list = [_g]
+        # Down-Sampling:
+        for _ in range(0, self.n_conv_layers_generator_u_net, 1):
+            if _n_filters < self.max_n_filters_generator:
+                _n_filters *= 2
+            _u_net_layers.append(self._convolutional_layer_generator_down_sampling(input_layer=_g,
+                                                                                   n_filters=_n_filters
+                                                                                   )
+                                 )
+        # Up-Sampling:
+        for i in range(0, self.n_conv_layers_generator_u_net, 1):
+            if _n_filters > self.start_n_filters_generator:
+                _n_filters //= 2
+            _i: int = -2 - i
+            _u_net_layers.append(self._convolutional_layer_generator_up_sampling(input_layer=_u_net_layers[-1],
+                                                                                 skip_layer=_u_net_layers[_i],
+                                                                                 n_filters=_n_filters
+                                                                                 )
+                                 )
+        _g = UpSampling2D(size=2)(_u_net_layers[-1])
+        _fake_image = Conv2D(filters=self.n_channels,
+                             kernel_size=(7, 7),
+                             strides=(1, 1),
+                             padding='same',
+                             kernel_initializer=self.initializer,
+                             activation='tanh'
+                             )(_g)
+        return Model(inputs=self.image_shape, outputs=_fake_image)
 
     def inference(self,
                   file_path_noisy_images: str,

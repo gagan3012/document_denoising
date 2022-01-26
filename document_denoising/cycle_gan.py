@@ -297,7 +297,10 @@ class CycleGAN:
         :return: Model
             Generator network model
         """
-        pass
+        if self.generator_type == 'u':
+            return self._u_net()
+        elif self.generator_type == 'res':
+            pass
 
     def _convolutional_layer_discriminator(self, input_layer, n_filters: int):
         """
@@ -337,6 +340,25 @@ class CycleGAN:
         _d = self.normalizer(_d)
         return ReLU(max_value=None, negative_slope=0, threshold=0)(_d)
 
+    def _convolutional_layer_generator_embedder(self, input_layer, n_filters: int):
+        """
+        Convolutional layer for embedding layer (mixture of experts)
+
+        :param input_layer:
+            Network layer to process in the first convolutional layer
+
+        :param n_filters: int
+            Number of filters in the convolutional layer
+        """
+        _e = Conv2D(filters=n_filters,
+                    kernel_size=(3, 3),
+                    strides=(1, 1),
+                    padding='same',
+                    kernel_initializer=self.initializer
+                    )(input_layer)
+        _e = self.normalizer(_e)
+        return ReLU(max_value=None, negative_slope=0, threshold=0)(_e)
+
     def _convolutional_layer_generator_up_sampling(self, input_layer, skip_layer, n_filters: int):
         """
         Convolutional layer for up sampling (u-net)
@@ -362,6 +384,23 @@ class CycleGAN:
             u = Dropout(rate=self.dropout_rate_generator_up_sampling, seed=1234)(u)
         u = self.normalizer(u)
         return Concatenate()([u, skip_layer])
+
+    def _embedder(self):
+        """
+        Embedding (first part of the mixture of experts architecture)
+        """
+        _e = Conv2D(filters=self.image_height,
+                    kernel_size=(3, 3),
+                    strides=(1, 1),
+                    padding='same',
+                    kernel_initializer=self.initializer
+                    )(self.image_shape)
+        _e = self.normalizer(_e)
+        _e = ReLU(max_value=None, negative_slope=0, threshold=0)(_e)
+        for _ in range(0, self.n_conv_layers_moe_embedder - 1, 1):
+            _e = self._convolutional_layer_generator_embedder(input_layer=_e, n_filters=self.image_height)
+        g = Concatenate()([_e, self.image_shape])
+        return g
 
     def _resnet_block(self):
         """

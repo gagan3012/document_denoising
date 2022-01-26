@@ -6,11 +6,10 @@ from keras_contrib.layers.normalization.instancenormalization import InstanceNor
 from keras.initializers.initializers_v2 import (
     Constant, HeNormal, HeUniform, GlorotNormal, GlorotUniform, LecunNormal, LecunUniform, Ones, Orthogonal, RandomNormal, RandomUniform, Zeros
 )
-from keras.layers import Concatenate, Dense, Dropout, Flatten, Input, InputSpec, Layer, Reshape, ReLU
-from keras.layers import BatchNormalization, Activation, ZeroPadding2D
+from keras.layers import Activation, BatchNormalization, Concatenate, Dense, Dropout, Input, ReLU, ZeroPadding2D
 from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D, Conv2DTranspose
-from keras.models import Sequential, Model
+from keras.models import Model
 from tensorflow.keras.optimizers import Adam
 from .utils import ImageLoader
 
@@ -61,6 +60,7 @@ class CycleGAN:
                  dropout_rate_moe_fc_gated_net: float = 0.0,
                  n_noise_types_moe_fc_classifier: int = 4,
                  dropout_rate_moe_fc_classifier: float = 0.0,
+                 print_model_architecture: bool = True
                  ):
         """
         :param file_path_train_clean_images: str
@@ -150,6 +150,9 @@ class CycleGAN:
 
         :param dropout_rate_moe_fc_classifier: float
             Dropout rate used after each convolutional layer in mixture of experts fully connected classification network
+
+        :param print_model_architecture: bool
+            Whether to print architecture of cycle-gan model components (discriminators & generators) or not
         """
         if len(file_path_train_clean_images) == 0:
             raise CycleGANException('File path for clean training document images is empty')
@@ -258,6 +261,8 @@ class CycleGAN:
         self.generator_A: Model = None
         self.generator_B: Model = None
         self.combined_model: Model = None
+        self.model_name: str = None
+        self.print_model_architecture: bool = print_model_architecture
         # Cycle-consistency loss:
         self.lambda_cycle: float = 10.0
         # Identity loss:
@@ -287,33 +292,36 @@ class CycleGAN:
             if _n_filters < self.max_n_filters_discriminator:
                 _n_filters *= 2
             _d = self._convolutional_layer_discriminator(input_layer=_d, n_filters=_n_filters)
+        _d = ZeroPadding2D(padding=(1, 1))(_d)
         _d = Conv2D(filters=_n_filters,
                     kernel_size=(4, 4),
                     strides=(1, 1),
-                    padding='same',
+                    padding='valid',
                     kernel_initializer=self.initializer
                     )(_d)
         _d = self.normalizer(_d)
         _d = LeakyReLU(alpha=0.2)(_d)
+        _d = ZeroPadding2D(padding=(1, 1))(_d)
         _patch_out = Conv2D(filters=1,
                             kernel_size=(4, 4),
                             strides=(1, 1),
-                            padding='same',
+                            padding='valid',
                             kernel_initializer=self.initializer
                             )(_d)
-        return Model(inputs=self.image_shape, outputs=_patch_out)
+        self.discriminator_patch = (_patch_out[1], _patch_out[2], _patch_out[3])
+        return Model(inputs=self.image_shape, outputs=_patch_out, name=self.model_name)
 
     def _build_cycle_gan_network(self):
         """
         Build complete cycle-gan network
         """
-        # Calculate output shape of Discriminator (PatchGAN):
-        _patch_height: int = int(self.image_height / 2 ** 4)
-        _patch_width: int = int(self.image_width / 2 ** 4)
-        self.discriminator_patch = (_patch_height, _patch_width, 1)
         # Build and compile the discriminators:
+        self.model_name = 'Discriminator A'
         self.discriminator_A = self._build_discriminator()
+        self.model_name = 'Discriminator B'
         self.discriminator_B = self._build_discriminator()
+        if self.print_model_architecture:
+            self.discriminator_A.summary()
         self.discriminator_A.compile(loss='mse',
                                      optimizer=self.optimizer,
                                      metrics=['accuracy'],
@@ -325,8 +333,12 @@ class CycleGAN:
                                      loss_weights=[0.5]
                                      )
         # Build the generators:
+        self.model_name = 'Generator A'
         self.generator_A = self._build_generator()
+        self.model_name = 'Generator B'
         self.generator_B = self._build_generator()
+        if self.print_model_architecture:
+            self.generator_A.summary()
         # Input images from both domains:
         _image_A: Input = Input(shape=self.image_shape)
         _image_B: Input = Input(shape=self.image_shape)
@@ -419,7 +431,7 @@ class CycleGAN:
                         )(_g)
             _g = self.normalizer(_g)
             _fake_image = Activation('tanh')(_g)
-            return Model(self.image_shape, _fake_image)
+            return Model(inputs=self.image_shape, outputs=_fake_image, name=self.model_name)
 
     def _convolutional_layer_discriminator(self, input_layer, n_filters: int):
         """
@@ -634,20 +646,20 @@ class CycleGAN:
                              kernel_initializer=self.initializer,
                              activation='tanh'
                              )(_g)
-        return Model(inputs=self.image_shape, outputs=_fake_image)
+        return Model(inputs=self.image_shape, outputs=_fake_image, name=self.model_name)
 
-    def inference(self,
-                  file_path_noisy_images: str,
-                  file_path_clean_images: str = None,
-                  ):
+    def inference(self, file_path_generator_A: str, file_path_noisy_images: str, file_path_cleaned_images: str):
         """
         Clean noisy document images based on training
+
+        :param file_path_generator_A: str
+            Complete file path of trained generator A
 
         :param file_path_noisy_images: str
             Complete file path of noisy images to clean
 
-        :param file_path_clean_images: str
-            Complete file path of clean images for evaluation
+        :param file_path_cleaned_images: str
+            Complete file path of the output (cleaned / denoised images)
         """
         pass
 
@@ -670,8 +682,8 @@ class CycleGAN:
         """
         _t0: datetime = datetime.datetime.now()
         # Adversarial loss ground truths:
-        _valid: np.array = np.ones((self.batch_size, ) + self.discriminator_A)
-        _fake: np.array = np.zeros((self.batch_size, ) + self.discriminator_B)
+        _valid: np.array = np.ones((self.batch_size, ) + self.discriminator_patch)
+        _fake: np.array = np.zeros((self.batch_size, ) + self.discriminator_patch)
         for epoch in range(n_epoch):
             for batch_i, (images_A, images_B) in enumerate(self.image_loader.load_batch(self.batch_size)):
                 # Translate images to opposite domain:

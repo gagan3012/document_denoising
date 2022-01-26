@@ -252,6 +252,12 @@ class CycleGAN:
         """
         pass
 
+    def _convolutional_layer_discriminator(self):
+        """
+        Convolutional layer for discriminator
+        """
+        pass
+
     def _convolutional_layer_down_sampling(self):
         """
         Convolutional layer for down sampling (u-net)
@@ -262,7 +268,18 @@ class CycleGAN:
         """
         Convolutional layer for up sampling (u-net)
         """
-        pass
+        u = UpSampling2D(size=2)(input_layer)
+        u = Conv2DTranspose(filters=n_filters,
+                            kernel_size=(4, 4),
+                            strides=(1, 1),
+                            padding='same',
+                            activation='relu',
+                            kernel_initializer=self.initializer
+                            )(u)
+        if self.dropout_rate_generator_up_sampling > 0:
+            u = Dropout(rate=self.dropout_rate_generator_up_sampling, seed=1234)(u)
+        u = InstanceNormalization()(u)
+        return Concatenate()([u, skip_layer])
 
     def _resnet_block(self):
         """

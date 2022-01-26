@@ -429,11 +429,35 @@ class CycleGAN:
         _clf_model.compile(optimizer='adam', metrics=['cross_entropy'])
         return _clf_model.predict(x=embedding_layer, batch_size=self.batch_size)
 
-    def _resnet_block(self):
+    def _resnet_block(self, input_layer, n_filters: int):
         """
         Residual network block
+
+        :param input_layer:
+            Network layer to process in the first convolutional layer
+
+        :param n_filters: int
+            Number of filters in the convolutional layer
         """
-        pass
+        # first layer convolutional layer
+        _r = Conv2D(filters=n_filters,
+                    kernel_size=(3, 3),
+                    strides=(1, 1),
+                    padding='same',
+                    kernel_initializer=self.initializer
+                    )(input_layer)
+        _r = self.normalizer(_r)
+        _r = ReLU(max_value=None, negative_slope=0, threshold=0)(_r)
+        # second convolutional layer
+        _r = Conv2D(filters=n_filters,
+                    kernel_size=(3, 3),
+                    strides=(1, 1),
+                    padding='same',
+                    kernel_initializer=self.initializer
+                    )(_r)
+        _r = self.normalizer(_r)
+        # concatenate merge channel-wise with input layer
+        return Concatenate()([_r, input_layer])
 
     def _u_net(self) -> Model:
         """

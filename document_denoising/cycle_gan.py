@@ -4,22 +4,19 @@ Build & train cycle-gan model (Generative Adversarial Network)
 
 from keras_contrib.layers.normalization.instancenormalization import InstanceNormalization
 from keras.initializers.initializers_v2 import (
-    Constant, HeNormal, HeUniform, GlorotNormal, GlorotUniform, LecunNormal, LecunUniform, Ones, Orthogonal, RandomNormal, RandomUniform, Zeros
+    Constant, HeNormal, HeUniform, GlorotNormal, GlorotUniform, LecunNormal, LecunUniform, Ones, Orthogonal, RandomNormal, RandomUniform, TruncatedNormal, Zeros
 )
-from keras.layers import Concatenate, Dense, Dropout, Flatten, Input, InputSpec, Layer, Reshape, ReLU
-from keras.layers import BatchNormalization, Activation, ZeroPadding2D
+from keras.layers import Activation, BatchNormalization, Concatenate, Dense, Dropout, Input, ReLU, ZeroPadding2D
 from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D, Conv2DTranspose
-from keras.models import Sequential, Model
-from tensorflow.keras.optimizers import Adam
-from .utils import ImageLoader
+from keras.models import load_model, Model
+from tensorflow.keras.optimizers import Adam, RMSprop, SGD
+from .utils import ImageProcessor, ReflectionPadding2D
 
 import datetime
 import numpy as np
 import keras
-import sys
 import os
-import tensorflow as tf
 
 
 class CycleGANException(Exception):
@@ -40,27 +37,30 @@ class CycleGAN:
                  image_height: int = 256,
                  image_width: int = 256,
                  learning_rate: float = 0.0002,
-                 initializer: str = 'xavier',
+                 optimizer: str = 'adam',
+                 initializer: str = 'glorot_normal',
                  batch_size: int = 1,
                  start_n_filters_discriminator: int = 64,
                  max_n_filters_discriminator: int = 512,
-                 n_conv_layers_discriminator: int = 4,
+                 n_conv_layers_discriminator: int = 3,
                  dropout_rate_discriminator: float = 0.0,
                  start_n_filters_generator: int = 32,
                  max_n_filters_generator: int = 512,
                  generator_type: str = 'u',
                  n_resnet_blocks: int = 9,
+                 n_conv_layers_generator_res_net: int = 2,
                  n_conv_layers_generator_u_net: int = 4,
                  dropout_rate_generator_down_sampling: float = 0.0,
                  dropout_rate_generator_up_sampling: float = 0.0,
                  include_moe_layers: bool = False,
-                 n_conv_layers_moe_embedder: int = 7,
+                 n_conv_layers_moe_embedder: int = 6,
                  dropout_rate_moe_embedder: float = 0.0,
                  n_hidden_layers_moe_fc_gated_net: int = 1,
                  n_hidden_layers_moe_fc_classifier: int = 1,
                  dropout_rate_moe_fc_gated_net: float = 0.0,
                  n_noise_types_moe_fc_classifier: int = 4,
                  dropout_rate_moe_fc_classifier: float = 0.0,
+                 print_model_architecture: bool = True
                  ):
         """
         :param file_path_train_clean_images: str
@@ -85,8 +85,19 @@ class CycleGAN:
 
         :param initializer: str
             Name of the initializer used in convolutional layers
-                -> constant: Constant value 0
+                -> constant: Constant value 2
                 -> he_normal:
+                -> he_uniform:
+                -> glorot_normal: Xavier normal
+                -> glorot_uniform: Xavier uniform
+                -> lecun_normal: Lecun normal
+                -> lecun_uniform:
+                -> ones: Constant value 1
+                -> orthogonal:
+                -> random_normal:
+                -> random_uniform:
+                -> truncated_normal:
+                -> zeros: Constant value 0
 
         :param batch_size: int
             Batch size
@@ -117,6 +128,9 @@ class CycleGAN:
         :param n_resnet_blocks: int
             Number of residual network blocks to use
                 Common: -> 6, 9
+
+        :param n_conv_layers_generator_res_net: int
+            Number of convolutional layers used for down and up sampling
 
         :param n_conv_layers_generator_u_net: int
             Number of convolutional layers in generator network with u-net architecture
@@ -150,6 +164,9 @@ class CycleGAN:
 
         :param dropout_rate_moe_fc_classifier: float
             Dropout rate used after each convolutional layer in mixture of experts fully connected classification network
+
+        :param print_model_architecture: bool
+            Whether to print architecture of cycle-gan model components (discriminators & generators) or not
         """
         if len(file_path_train_clean_images) == 0:
             raise CycleGANException('File path for clean training document images is empty')
@@ -164,13 +181,26 @@ class CycleGAN:
         self.image_height: int = image_height
         self.image_width: int = image_width
         self.image_shape: Input = Input(shape=(self.image_height, self.image_width, self.n_channels))
-        self.learning_rate: float = learning_rate
-        self.optimizer: Adam = Adam(learning_rate=learning_rate,
-                                    beta_1=0.5,
-                                    beta_2=0.999,
-                                    epsilon=1e-7,
-                                    amsgrad=False
-                                    )
+        self.learning_rate: float = learning_rate if learning_rate > 0 else 0.0002
+        if optimizer == 'rmsprop':
+            self.optimizer: RMSprop = RMSprop(learning_rate=self.learning_rate,
+                                              rho=0.9,
+                                              momentum=0.0,
+                                              epsilon=1e-7,
+                                              centered=False
+                                              )
+        elif optimizer == 'sgd':
+            self.optimizer: SGD = SGD(learning_rate=self.learning_rate,
+                                      momentum=0.0,
+                                      nesterov=False
+                                      )
+        else:
+            self.optimizer: Adam = Adam(learning_rate=self.learning_rate,
+                                        beta_1=0.5,
+                                        beta_2=0.999,
+                                        epsilon=1e-7,
+                                        amsgrad=False
+                                        )
         self.batch_size: int = batch_size if batch_size > 0 else 1
         if self.batch_size == 1:
             self.normalizer = InstanceNormalization(axis=-1,
@@ -207,7 +237,7 @@ class CycleGAN:
                                                  adjustment=None
                                                  )
         if initializer == 'constant':
-            self.initializer: keras.initializers.initializers_v2 = Constant(value=0)
+            self.initializer: keras.initializers.initializers_v2 = Constant(value=2)
         elif initializer == 'he_normal':
             self.initializer: keras.initializers.initializers_v2 = HeNormal(seed=1234)
         elif initializer == 'he_uniform':
@@ -228,6 +258,8 @@ class CycleGAN:
             self.initializer: keras.initializers.initializers_v2 = RandomNormal(mean=0.0, stddev=0.2, seed=1234)
         elif initializer == 'random_uniform':
             self.initializer: keras.initializers.initializers_v2 = RandomUniform(minval=-0.05, maxval=0.05, seed=1234)
+        elif initializer == 'truncated_normal':
+            self.initializer: keras.initializers.initializers_v2 = TruncatedNormal(mean=0.0, stddev=0.05, seed=1234)
         elif initializer == 'zeros':
             self.initializer: keras.initializers.initializers_v2 = Zeros()
         self.start_n_filters_discriminator: int = start_n_filters_discriminator
@@ -241,6 +273,7 @@ class CycleGAN:
         else:
             self.generator_type: str = 'u'
         self.n_conv_layers_generator_u_net: int = n_conv_layers_generator_u_net
+        self.n_conv_layers_generator_res_net: int = n_conv_layers_generator_res_net
         self.n_resnet_blocks: int = n_resnet_blocks if n_resnet_blocks > 0 else 9
         self.dropout_rate_generator_down_sampling: float = dropout_rate_generator_down_sampling if dropout_rate_generator_down_sampling >= 0 else 0.0
         self.dropout_rate_generator_up_sampling: float = dropout_rate_generator_up_sampling if dropout_rate_generator_up_sampling >= 0 else 0.0
@@ -258,12 +291,21 @@ class CycleGAN:
         self.generator_A: Model = None
         self.generator_B: Model = None
         self.combined_model: Model = None
+        self.model_name: str = None
+        self.print_model_architecture: bool = print_model_architecture
         # Cycle-consistency loss:
         self.lambda_cycle: float = 10.0
         # Identity loss:
         self.lambda_id: float = 0.1 * self.lambda_cycle
-        # Load Image Data:
-        self.image_loader: ImageLoader = ImageLoader(file_path_clean=self.file_path_train_clean_data)
+        # Initialize ImageProcessor for loading and preprocessing image data (clean & noisy) in training:
+        self.image_processor: ImageProcessor = ImageProcessor(file_path_clean_images=self.file_path_train_clean_data,
+                                                              file_path_noisy_images=self.file_path_train_noisy_data,
+                                                              n_channels=self.n_channels,
+                                                              batch_size=self.batch_size,
+                                                              image_resolution=(256, 256),
+                                                              flip=True,
+                                                              crop=None
+                                                              )
         # Build Cycle-GAN Network:
         self._build_cycle_gan_network()
 
@@ -283,37 +325,41 @@ class CycleGAN:
                     )(self.image_shape)
         _d = self.normalizer(_d)
         _d = LeakyReLU(alpha=0.2)(_d)
-        for _ in range(0, self.n_conv_layers_discriminator - 1, 1):
+        for _ in range(0, self.n_conv_layers_discriminator, 1):
             if _n_filters < self.max_n_filters_discriminator:
                 _n_filters *= 2
             _d = self._convolutional_layer_discriminator(input_layer=_d, n_filters=_n_filters)
+        _d = ZeroPadding2D(padding=(1, 1))(_d)
         _d = Conv2D(filters=_n_filters,
                     kernel_size=(4, 4),
                     strides=(1, 1),
-                    padding='same',
+                    padding='valid',
                     kernel_initializer=self.initializer
                     )(_d)
         _d = self.normalizer(_d)
         _d = LeakyReLU(alpha=0.2)(_d)
+        _d = ZeroPadding2D(padding=(1, 1))(_d)
         _patch_out = Conv2D(filters=1,
                             kernel_size=(4, 4),
                             strides=(1, 1),
-                            padding='same',
-                            kernel_initializer=self.initializer
+                            padding='valid',
+                            kernel_initializer=self.initializer,
+                            activation='sigmoid'
                             )(_d)
-        return Model(inputs=self.image_shape, outputs=_patch_out)
+        self.discriminator_patch = (_patch_out[1], _patch_out[2], _patch_out[3])
+        return Model(inputs=self.image_shape, outputs=_patch_out, name=self.model_name)
 
     def _build_cycle_gan_network(self):
         """
         Build complete cycle-gan network
         """
-        # Calculate output shape of Discriminator (PatchGAN):
-        _patch_height: int = int(self.image_height / 2 ** 4)
-        _patch_width: int = int(self.image_width / 2 ** 4)
-        self.discriminator_patch = (_patch_height, _patch_width, 1)
         # Build and compile the discriminators:
+        self.model_name = 'Discriminator A'
         self.discriminator_A = self._build_discriminator()
+        self.model_name = 'Discriminator B'
         self.discriminator_B = self._build_discriminator()
+        if self.print_model_architecture:
+            self.discriminator_A.summary()
         self.discriminator_A.compile(loss='mse',
                                      optimizer=self.optimizer,
                                      metrics=['accuracy'],
@@ -325,8 +371,12 @@ class CycleGAN:
                                      loss_weights=[0.5]
                                      )
         # Build the generators:
+        self.model_name = 'Generator A'
         self.generator_A = self._build_generator()
+        self.model_name = 'Generator B'
         self.generator_B = self._build_generator()
+        if self.print_model_architecture:
+            self.generator_A.summary()
         # Input images from both domains:
         _image_A: Input = Input(shape=self.image_shape)
         _image_B: Input = Input(shape=self.image_shape)
@@ -390,6 +440,7 @@ class CycleGAN:
             else:
                 _embedder = None
             _n_filters: int = self.start_n_filters_generator
+            #_g = ReflectionPadding2D(padding=(1, 1))(self.image_shape)
             _g = Conv2D(filters=_n_filters,
                         kernel_size=(7, 7),
                         strides=(1, 1),
@@ -398,19 +449,22 @@ class CycleGAN:
                         )(self.image_shape)
             _g = self.normalizer(_g)
             _g = ReLU(max_value=None, negative_slope=0, threshold=0)(_g)
-            for i in range(0, self.n_resnet_blocks, 1):
-                if i < (self.n_resnet_blocks / 2):
-                    # Down-Sampling:
-                    if _n_filters < self.max_n_filters_generator:
-                        _n_filters *= 2
-                else:
-                    # Up-Sampling:
-                    if _n_filters > self.start_n_filters_generator:
-                        _n_filters //= 2
+            # Down-Sampling:
+            for _ in range(0, self.n_conv_layers_generator_res_net, 1):
+                if _n_filters < self.max_n_filters_generator:
+                    _n_filters *= 2
+                _g = self._convolutional_layer_generator_down_sampling(input_layer=_g, n_filters=_n_filters)
+            for _ in range(0, self.n_resnet_blocks, 1):
                 _g = self._resnet_block(input_layer=_g, n_filters=_n_filters)
                 if self.include_moe_layers:
                     # gated network
                     _g = self._gated_network(input_layer=_embedder, units=64)
+            # Up-Sampling:
+            for _ in range(0, self.n_conv_layers_generator_res_net, 1):
+                if _n_filters > self.start_n_filters_generator:
+                    _n_filters //= 2
+                _g = self._convolutional_layer_generator_up_sampling(input_layer=_g, skip_layer=None, n_filters=_n_filters)
+            #_g = ReflectionPadding2D(padding=(1, 1))(_g)
             _g = Conv2D(filters=1,
                         kernel_size=(7, 7),
                         strides=(1, 1),
@@ -419,7 +473,7 @@ class CycleGAN:
                         )(_g)
             _g = self.normalizer(_g)
             _fake_image = Activation('tanh')(_g)
-            return Model(self.image_shape, _fake_image)
+            return Model(inputs=self.image_shape, outputs=_fake_image, name=self.model_name)
 
     def _convolutional_layer_discriminator(self, input_layer, n_filters: int):
         """
@@ -480,7 +534,7 @@ class CycleGAN:
 
     def _convolutional_layer_generator_up_sampling(self, input_layer, skip_layer, n_filters: int):
         """
-        Convolutional layer for up sampling (u-net)
+        Convolutional layer for up sampling
 
         :param input_layer:
             Network layer to process in the first convolutional layer
@@ -491,18 +545,25 @@ class CycleGAN:
         :param n_filters: int
             Number of filters in the (transposed) convolutional layer
         """
-        u = UpSampling2D(size=2)(input_layer)
-        u = Conv2DTranspose(filters=n_filters,
-                            kernel_size=(4, 4),
-                            strides=(1, 1),
-                            padding='same',
-                            activation='relu',
-                            kernel_initializer=self.initializer
-                            )(u)
+        if self.generator_type == 'u':
+            _kernel_size: tuple = (4, 4)
+        else:
+            _kernel_size: tuple = (3, 3)
+        _u = UpSampling2D(size=2)(input_layer)
+        _u = Conv2DTranspose(filters=n_filters,
+                             kernel_size=_kernel_size,
+                             strides=(1, 1),
+                             padding='same',
+                             kernel_initializer=self.initializer
+                             )(_u)
         if self.dropout_rate_generator_up_sampling > 0:
-            u = Dropout(rate=self.dropout_rate_generator_up_sampling, seed=1234)(u)
-        u = self.normalizer(u)
-        return Concatenate()([u, skip_layer])
+            _u = Dropout(rate=self.dropout_rate_generator_up_sampling, seed=1234)(_u)
+        _u = self.normalizer(_u)
+        _u = ReLU(max_value=None, negative_slope=0, threshold=0)(_u)
+        if self.generator_type == 'u':
+            return Concatenate()([_u, skip_layer])
+        else:
+            return _u
 
     def _embedder(self):
         """
@@ -558,7 +619,7 @@ class CycleGAN:
         :param n_filters: int
             Number of filters in the convolutional layer
         """
-        # first layer convolutional layer
+        #_r = ReflectionPadding2D(padding=(1, 1))(input_layer)
         _r = Conv2D(filters=n_filters,
                     kernel_size=(3, 3),
                     strides=(1, 1),
@@ -567,7 +628,7 @@ class CycleGAN:
                     )(input_layer)
         _r = self.normalizer(_r)
         _r = ReLU(max_value=None, negative_slope=0, threshold=0)(_r)
-        # second convolutional layer
+        #_r = ReflectionPadding2D(padding=(1, 1))(_r)
         _r = Conv2D(filters=n_filters,
                     kernel_size=(3, 3),
                     strides=(1, 1),
@@ -575,7 +636,6 @@ class CycleGAN:
                     kernel_initializer=self.initializer
                     )(_r)
         _r = self.normalizer(_r)
-        # concatenate merge channel-wise with input layer
         return Concatenate()([_r, input_layer])
 
     def _save_models(self, model_output_path: str):
@@ -634,22 +694,50 @@ class CycleGAN:
                              kernel_initializer=self.initializer,
                              activation='tanh'
                              )(_g)
-        return Model(inputs=self.image_shape, outputs=_fake_image)
+        return Model(inputs=self.image_shape, outputs=_fake_image, name=self.model_name)
 
     def inference(self,
+                  file_path_generator: str,
                   file_path_noisy_images: str,
-                  file_path_clean_images: str = None,
+                  file_path_cleaned_images: str,
+                  file_suffix: str = 'cleaned'
                   ):
         """
         Clean noisy document images based on training
 
+        :param file_path_generator: str
+            Complete file path of trained generator A
+
         :param file_path_noisy_images: str
             Complete file path of noisy images to clean
 
-        :param file_path_clean_images: str
-            Complete file path of clean images for evaluation
+        :param file_path_cleaned_images: str
+            Complete file path of the output (cleaned / denoised images)
+
+        :param file_suffix: str
+            Suffix of the output file name
         """
-        pass
+        _image_processor: ImageProcessor = ImageProcessor(file_path_clean_images='',
+                                                          file_path_noisy_images=file_path_noisy_images,
+                                                          n_channels=self.n_channels,
+                                                          batch_size=self.batch_size,
+                                                          image_resolution=(256, 256),
+                                                          flip=False,
+                                                          crop=None
+                                                          )
+        _generator_A: Model = load_model(filepath=file_path_generator,
+                                         custom_objects=None,
+                                         compile=True,
+                                         options=None
+                                         )
+        for image_file_name, image in _image_processor.load_images():
+            if file_suffix is None or len(file_suffix) == 0:
+                _output_file_path: str = os.path.join(file_path_cleaned_images, image_file_name.split('/')[-1])
+            else:
+                _output_file_path: str = os.path.join(file_path_cleaned_images,
+                                                      f"{file_suffix}_{image_file_name.split('/')[-1]}"
+                                                      )
+            _image_processor.save_image(image=_generator_A.predict(x=image), output_file_path=_output_file_path)
 
     def train(self,
               model_output_path: str,
@@ -670,10 +758,10 @@ class CycleGAN:
         """
         _t0: datetime = datetime.datetime.now()
         # Adversarial loss ground truths:
-        _valid: np.array = np.ones((self.batch_size, ) + self.discriminator_A)
-        _fake: np.array = np.zeros((self.batch_size, ) + self.discriminator_B)
+        _valid: np.array = np.ones((self.batch_size, ) + self.discriminator_patch)
+        _fake: np.array = np.zeros((self.batch_size, ) + self.discriminator_patch)
         for epoch in range(n_epoch):
-            for batch_i, (images_A, images_B) in enumerate(self.image_loader.load_batch(self.batch_size)):
+            for batch_i, (images_A, images_B) in enumerate(self.image_processor.load_batch()):
                 # Translate images to opposite domain:
                 _fake_B = self.generator_A.predict(images_A)
                 _fake_A = self.generator_B.predict(images_B)
@@ -702,7 +790,7 @@ class CycleGAN:
 
                 # Print training progress:
                 _print_epoch_status: str = f'[Epoch: {epoch}/{n_epoch}]'
-                _print_batch_status: str = f'[Batch: {batch_i}/{self.image_loader.n_batches}]'
+                _print_batch_status: str = f'[Batch: {batch_i}/{self.image_processor.n_batches}]'
                 _print_discriminator_loss_status: str = f'[D loss: {_discriminator_loss[0]}, acc: {100 * _discriminator_loss[1]}]'
                 _print_generator_loss_status: str = f'[G loss: {_generator_loss[0]}, adv: {np.mean(_generator_loss[1:3])}, recon: {np.mean(_generator_loss[3:5])}, id: {np.mean(_generator_loss[5:6])}]'
                 print(_print_epoch_status, _print_batch_status, _print_discriminator_loss_status, _print_generator_loss_status, f'time: {_elapsed_time}')

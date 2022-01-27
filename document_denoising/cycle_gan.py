@@ -85,8 +85,19 @@ class CycleGAN:
 
         :param initializer: str
             Name of the initializer used in convolutional layers
-                -> constant: Constant value 0
+                -> constant: Constant value 2
                 -> he_normal:
+                -> he_uniform:
+                -> glorot_normal: Xavier normal
+                -> glorot_uniform: Xavier uniform
+                -> lecun_normal: Lecun normal
+                -> lecun_uniform:
+                -> ones: Constant value 1
+                -> orthogonal:
+                -> random_normal:
+                -> random_uniform:
+                -> truncated_normal:
+                -> zeros: Constant value 0
 
         :param batch_size: int
             Batch size

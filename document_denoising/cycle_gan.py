@@ -4,7 +4,7 @@ Build & train cycle-gan model (Generative Adversarial Network)
 
 from keras_contrib.layers.normalization.instancenormalization import InstanceNormalization
 from keras.initializers.initializers_v2 import (
-    Constant, HeNormal, HeUniform, GlorotNormal, GlorotUniform, LecunNormal, LecunUniform, Ones, Orthogonal, RandomNormal, RandomUniform, Zeros
+    Constant, HeNormal, HeUniform, GlorotNormal, GlorotUniform, LecunNormal, LecunUniform, Ones, Orthogonal, RandomNormal, RandomUniform, TruncatedNormal, Zeros
 )
 from keras.layers import Activation, BatchNormalization, Concatenate, Dense, Dropout, Input, ReLU, ZeroPadding2D
 from keras.layers.advanced_activations import LeakyReLU
@@ -38,7 +38,7 @@ class CycleGAN:
                  image_width: int = 256,
                  learning_rate: float = 0.0002,
                  optimizer: str = 'adam',
-                 initializer: str = 'lecun_normal',
+                 initializer: str = 'glorot_normal',
                  batch_size: int = 1,
                  start_n_filters_discriminator: int = 64,
                  max_n_filters_discriminator: int = 512,
@@ -247,6 +247,8 @@ class CycleGAN:
             self.initializer: keras.initializers.initializers_v2 = RandomNormal(mean=0.0, stddev=0.2, seed=1234)
         elif initializer == 'random_uniform':
             self.initializer: keras.initializers.initializers_v2 = RandomUniform(minval=-0.05, maxval=0.05, seed=1234)
+        elif initializer == 'truncated_normal':
+            self.initializer: keras.initializers.initializers_v2 = TruncatedNormal(mean=0.0, stddev=0.05, seed=1234)
         elif initializer == 'zeros':
             self.initializer: keras.initializers.initializers_v2 = Zeros()
         self.start_n_filters_discriminator: int = start_n_filters_discriminator

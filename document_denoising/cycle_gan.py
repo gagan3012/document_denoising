@@ -10,15 +10,13 @@ from keras.layers import Activation, BatchNormalization, Concatenate, Dense, Dro
 from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D, Conv2DTranspose
 from keras.models import Model
-from tensorflow.keras.optimizers import Adam
-from .utils import ImageLoader
+from tensorflow.keras.optimizers import Adam, RMSprop, SGD
+from .utils import ImageProcessor, ReflectionPadding2D
 
 import datetime
 import numpy as np
 import keras
-import sys
 import os
-import tensorflow as tf
 
 
 class CycleGANException(Exception):
@@ -39,21 +37,23 @@ class CycleGAN:
                  image_height: int = 256,
                  image_width: int = 256,
                  learning_rate: float = 0.0002,
-                 initializer: str = 'xavier',
+                 optimizer: str = 'adam',
+                 initializer: str = 'lecun_normal',
                  batch_size: int = 1,
                  start_n_filters_discriminator: int = 64,
                  max_n_filters_discriminator: int = 512,
-                 n_conv_layers_discriminator: int = 4,
+                 n_conv_layers_discriminator: int = 3,
                  dropout_rate_discriminator: float = 0.0,
                  start_n_filters_generator: int = 32,
                  max_n_filters_generator: int = 512,
                  generator_type: str = 'u',
                  n_resnet_blocks: int = 9,
+                 n_conv_layers_generator_res_net: int = 2,
                  n_conv_layers_generator_u_net: int = 4,
                  dropout_rate_generator_down_sampling: float = 0.0,
                  dropout_rate_generator_up_sampling: float = 0.0,
                  include_moe_layers: bool = False,
-                 n_conv_layers_moe_embedder: int = 7,
+                 n_conv_layers_moe_embedder: int = 6,
                  dropout_rate_moe_embedder: float = 0.0,
                  n_hidden_layers_moe_fc_gated_net: int = 1,
                  n_hidden_layers_moe_fc_classifier: int = 1,
@@ -118,6 +118,9 @@ class CycleGAN:
             Number of residual network blocks to use
                 Common: -> 6, 9
 
+        :param n_conv_layers_generator_res_net: int
+            Number of convolutional layers used for down and up sampling
+
         :param n_conv_layers_generator_u_net: int
             Number of convolutional layers in generator network with u-net architecture
 
@@ -167,13 +170,26 @@ class CycleGAN:
         self.image_height: int = image_height
         self.image_width: int = image_width
         self.image_shape: Input = Input(shape=(self.image_height, self.image_width, self.n_channels))
-        self.learning_rate: float = learning_rate
-        self.optimizer: Adam = Adam(learning_rate=learning_rate,
-                                    beta_1=0.5,
-                                    beta_2=0.999,
-                                    epsilon=1e-7,
-                                    amsgrad=False
-                                    )
+        self.learning_rate: float = learning_rate if learning_rate > 0 else 0.0002
+        if optimizer == 'rmsprop':
+            self.optimizer: RMSprop = RMSprop(learning_rate=self.learning_rate,
+                                              rho=0.9,
+                                              momentum=0.0,
+                                              epsilon=1e-7,
+                                              centered=False
+                                              )
+        elif optimizer == 'sgd':
+            self.optimizer: SGD = SGD(learning_rate=self.learning_rate,
+                                      momentum=0.0,
+                                      nesterov=False
+                                      )
+        else:
+            self.optimizer: Adam = Adam(learning_rate=self.learning_rate,
+                                        beta_1=0.5,
+                                        beta_2=0.999,
+                                        epsilon=1e-7,
+                                        amsgrad=False
+                                        )
         self.batch_size: int = batch_size if batch_size > 0 else 1
         if self.batch_size == 1:
             self.normalizer = InstanceNormalization(axis=-1,
@@ -244,6 +260,7 @@ class CycleGAN:
         else:
             self.generator_type: str = 'u'
         self.n_conv_layers_generator_u_net: int = n_conv_layers_generator_u_net
+        self.n_conv_layers_generator_res_net: int = n_conv_layers_generator_res_net
         self.n_resnet_blocks: int = n_resnet_blocks if n_resnet_blocks > 0 else 9
         self.dropout_rate_generator_down_sampling: float = dropout_rate_generator_down_sampling if dropout_rate_generator_down_sampling >= 0 else 0.0
         self.dropout_rate_generator_up_sampling: float = dropout_rate_generator_up_sampling if dropout_rate_generator_up_sampling >= 0 else 0.0
@@ -268,7 +285,7 @@ class CycleGAN:
         # Identity loss:
         self.lambda_id: float = 0.1 * self.lambda_cycle
         # Load Image Data:
-        self.image_loader: ImageLoader = ImageLoader(file_path_clean=self.file_path_train_clean_data)
+        self.image_loader: ImageProcessor = ImageProcessor(file_path_clean=self.file_path_train_clean_data)
         # Build Cycle-GAN Network:
         self._build_cycle_gan_network()
 
@@ -288,7 +305,7 @@ class CycleGAN:
                     )(self.image_shape)
         _d = self.normalizer(_d)
         _d = LeakyReLU(alpha=0.2)(_d)
-        for _ in range(0, self.n_conv_layers_discriminator - 1, 1):
+        for _ in range(0, self.n_conv_layers_discriminator, 1):
             if _n_filters < self.max_n_filters_discriminator:
                 _n_filters *= 2
             _d = self._convolutional_layer_discriminator(input_layer=_d, n_filters=_n_filters)
@@ -306,7 +323,8 @@ class CycleGAN:
                             kernel_size=(4, 4),
                             strides=(1, 1),
                             padding='valid',
-                            kernel_initializer=self.initializer
+                            kernel_initializer=self.initializer,
+                            activation='sigmoid'
                             )(_d)
         self.discriminator_patch = (_patch_out[1], _patch_out[2], _patch_out[3])
         return Model(inputs=self.image_shape, outputs=_patch_out, name=self.model_name)
@@ -402,6 +420,7 @@ class CycleGAN:
             else:
                 _embedder = None
             _n_filters: int = self.start_n_filters_generator
+            #_g = ReflectionPadding2D(padding=(1, 1))(self.image_shape)
             _g = Conv2D(filters=_n_filters,
                         kernel_size=(7, 7),
                         strides=(1, 1),
@@ -410,19 +429,22 @@ class CycleGAN:
                         )(self.image_shape)
             _g = self.normalizer(_g)
             _g = ReLU(max_value=None, negative_slope=0, threshold=0)(_g)
-            for i in range(0, self.n_resnet_blocks, 1):
-                if i < (self.n_resnet_blocks / 2):
-                    # Down-Sampling:
-                    if _n_filters < self.max_n_filters_generator:
-                        _n_filters *= 2
-                else:
-                    # Up-Sampling:
-                    if _n_filters > self.start_n_filters_generator:
-                        _n_filters //= 2
+            # Down-Sampling:
+            for _ in range(0, self.n_conv_layers_generator_res_net, 1):
+                if _n_filters < self.max_n_filters_generator:
+                    _n_filters *= 2
+                _g = self._convolutional_layer_generator_down_sampling(input_layer=_g, n_filters=_n_filters)
+            for _ in range(0, self.n_resnet_blocks, 1):
                 _g = self._resnet_block(input_layer=_g, n_filters=_n_filters)
                 if self.include_moe_layers:
                     # gated network
                     _g = self._gated_network(input_layer=_embedder, units=64)
+            # Up-Sampling:
+            for _ in range(0, self.n_conv_layers_generator_res_net, 1):
+                if _n_filters > self.start_n_filters_generator:
+                    _n_filters //= 2
+                _g = self._convolutional_layer_generator_up_sampling(input_layer=_g, skip_layer=None, n_filters=_n_filters)
+            #_g = ReflectionPadding2D(padding=(1, 1))(_g)
             _g = Conv2D(filters=1,
                         kernel_size=(7, 7),
                         strides=(1, 1),
@@ -492,7 +514,7 @@ class CycleGAN:
 
     def _convolutional_layer_generator_up_sampling(self, input_layer, skip_layer, n_filters: int):
         """
-        Convolutional layer for up sampling (u-net)
+        Convolutional layer for up sampling
 
         :param input_layer:
             Network layer to process in the first convolutional layer
@@ -503,18 +525,25 @@ class CycleGAN:
         :param n_filters: int
             Number of filters in the (transposed) convolutional layer
         """
-        u = UpSampling2D(size=2)(input_layer)
-        u = Conv2DTranspose(filters=n_filters,
-                            kernel_size=(4, 4),
-                            strides=(1, 1),
-                            padding='same',
-                            activation='relu',
-                            kernel_initializer=self.initializer
-                            )(u)
+        if self.generator_type == 'u':
+            _kernel_size: tuple = (4, 4)
+        else:
+            _kernel_size: tuple = (3, 3)
+        _u = UpSampling2D(size=2)(input_layer)
+        _u = Conv2DTranspose(filters=n_filters,
+                             kernel_size=_kernel_size,
+                             strides=(1, 1),
+                             padding='same',
+                             kernel_initializer=self.initializer
+                             )(_u)
         if self.dropout_rate_generator_up_sampling > 0:
-            u = Dropout(rate=self.dropout_rate_generator_up_sampling, seed=1234)(u)
-        u = self.normalizer(u)
-        return Concatenate()([u, skip_layer])
+            _u = Dropout(rate=self.dropout_rate_generator_up_sampling, seed=1234)(_u)
+        _u = self.normalizer(_u)
+        _u = ReLU(max_value=None, negative_slope=0, threshold=0)(_u)
+        if self.generator_type == 'u':
+            return Concatenate()([_u, skip_layer])
+        else:
+            return _u
 
     def _embedder(self):
         """
@@ -570,7 +599,7 @@ class CycleGAN:
         :param n_filters: int
             Number of filters in the convolutional layer
         """
-        # first layer convolutional layer
+        #_r = ReflectionPadding2D(padding=(1, 1))(input_layer)
         _r = Conv2D(filters=n_filters,
                     kernel_size=(3, 3),
                     strides=(1, 1),
@@ -579,7 +608,7 @@ class CycleGAN:
                     )(input_layer)
         _r = self.normalizer(_r)
         _r = ReLU(max_value=None, negative_slope=0, threshold=0)(_r)
-        # second convolutional layer
+        #_r = ReflectionPadding2D(padding=(1, 1))(_r)
         _r = Conv2D(filters=n_filters,
                     kernel_size=(3, 3),
                     strides=(1, 1),
@@ -587,7 +616,6 @@ class CycleGAN:
                     kernel_initializer=self.initializer
                     )(_r)
         _r = self.normalizer(_r)
-        # concatenate merge channel-wise with input layer
         return Concatenate()([_r, input_layer])
 
     def _save_models(self, model_output_path: str):

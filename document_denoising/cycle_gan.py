@@ -9,7 +9,7 @@ from keras.initializers.initializers_v2 import (
 from keras.layers import Activation, BatchNormalization, Concatenate, Dense, Dropout, Input, ReLU, ZeroPadding2D
 from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D, Conv2DTranspose
-from keras.models import Model
+from keras.models import load_model, Model
 from tensorflow.keras.optimizers import Adam, RMSprop, SGD
 from .utils import ImageProcessor, ReflectionPadding2D
 
@@ -297,8 +297,15 @@ class CycleGAN:
         self.lambda_cycle: float = 10.0
         # Identity loss:
         self.lambda_id: float = 0.1 * self.lambda_cycle
-        # Load Image Data:
-        self.image_loader: ImageProcessor = ImageProcessor(file_path_clean=self.file_path_train_clean_data)
+        # Initialize ImageProcessor for loading and preprocessing image data (clean & noisy) in training:
+        self.image_processor: ImageProcessor = ImageProcessor(file_path_clean_images=self.file_path_train_clean_data,
+                                                              file_path_noisy_images=self.file_path_train_noisy_data,
+                                                              n_channels=self.n_channels,
+                                                              batch_size=self.batch_size,
+                                                              image_resolution=(256, 256),
+                                                              flip=True,
+                                                              crop=None
+                                                              )
         # Build Cycle-GAN Network:
         self._build_cycle_gan_network()
 
@@ -689,11 +696,16 @@ class CycleGAN:
                              )(_g)
         return Model(inputs=self.image_shape, outputs=_fake_image, name=self.model_name)
 
-    def inference(self, file_path_generator_A: str, file_path_noisy_images: str, file_path_cleaned_images: str):
+    def inference(self,
+                  file_path_generator: str,
+                  file_path_noisy_images: str,
+                  file_path_cleaned_images: str,
+                  file_suffix: str = 'cleaned'
+                  ):
         """
         Clean noisy document images based on training
 
-        :param file_path_generator_A: str
+        :param file_path_generator: str
             Complete file path of trained generator A
 
         :param file_path_noisy_images: str
@@ -701,8 +713,31 @@ class CycleGAN:
 
         :param file_path_cleaned_images: str
             Complete file path of the output (cleaned / denoised images)
+
+        :param file_suffix: str
+            Suffix of the output file name
         """
-        pass
+        _image_processor: ImageProcessor = ImageProcessor(file_path_clean_images='',
+                                                          file_path_noisy_images=file_path_noisy_images,
+                                                          n_channels=self.n_channels,
+                                                          batch_size=self.batch_size,
+                                                          image_resolution=(256, 256),
+                                                          flip=False,
+                                                          crop=None
+                                                          )
+        _generator_A: Model = load_model(filepath=file_path_generator,
+                                         custom_objects=None,
+                                         compile=True,
+                                         options=None
+                                         )
+        for image_file_name, image in _image_processor.load_images():
+            if file_suffix is None or len(file_suffix) == 0:
+                _output_file_path: str = os.path.join(file_path_cleaned_images, image_file_name.split('/')[-1])
+            else:
+                _output_file_path: str = os.path.join(file_path_cleaned_images,
+                                                      f"{file_suffix}_{image_file_name.split('/')[-1]}"
+                                                      )
+            _image_processor.save_image(image=_generator_A.predict(x=image), output_file_path=_output_file_path)
 
     def train(self,
               model_output_path: str,
@@ -726,7 +761,7 @@ class CycleGAN:
         _valid: np.array = np.ones((self.batch_size, ) + self.discriminator_patch)
         _fake: np.array = np.zeros((self.batch_size, ) + self.discriminator_patch)
         for epoch in range(n_epoch):
-            for batch_i, (images_A, images_B) in enumerate(self.image_loader.load_batch(self.batch_size)):
+            for batch_i, (images_A, images_B) in enumerate(self.image_processor.load_batch()):
                 # Translate images to opposite domain:
                 _fake_B = self.generator_A.predict(images_A)
                 _fake_A = self.generator_B.predict(images_B)
@@ -755,7 +790,7 @@ class CycleGAN:
 
                 # Print training progress:
                 _print_epoch_status: str = f'[Epoch: {epoch}/{n_epoch}]'
-                _print_batch_status: str = f'[Batch: {batch_i}/{self.image_loader.n_batches}]'
+                _print_batch_status: str = f'[Batch: {batch_i}/{self.image_processor.n_batches}]'
                 _print_discriminator_loss_status: str = f'[D loss: {_discriminator_loss[0]}, acc: {100 * _discriminator_loss[1]}]'
                 _print_generator_loss_status: str = f'[G loss: {_generator_loss[0]}, adv: {np.mean(_generator_loss[1:3])}, recon: {np.mean(_generator_loss[3:5])}, id: {np.mean(_generator_loss[5:6])}]'
                 print(_print_epoch_status, _print_batch_status, _print_discriminator_loss_status, _print_generator_loss_status, f'time: {_elapsed_time}')

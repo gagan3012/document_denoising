@@ -52,6 +52,7 @@ class ImageProcessor:
         self.file_path_noisy_images: str = file_path_noisy_images
         self.n_channels: int = cv2.IMREAD_COLOR if n_channels > 0 else cv2.IMREAD_GRAYSCALE
         self.batch_size: int = batch_size
+        self.n_batches: int = 0
         self.image_resolution: tuple = image_resolution
         self.flip: bool = flip
         self.crop: Tuple[Tuple[int, int], Tuple[int, int]] = crop
@@ -96,11 +97,11 @@ class ImageProcessor:
         """
         _file_paths_clean: List[str] = glob(f'./{self.file_path_clean_images}/*')
         _file_paths_noisy: List[str] = glob(f'./{self.file_path_noisy_images}/*')
-        _batches: int = int(min(len(_file_paths_clean), len(_file_paths_noisy)) / self.batch_size)
-        _total_samples: int = _batches * self.batch_size
+        self.n_batches = int(min(len(_file_paths_clean), len(_file_paths_noisy)) / self.batch_size)
+        _total_samples: int = self.n_batches * self.batch_size
         _file_paths_clean_sample: List[str] = np.random.choice(_file_paths_clean, _total_samples, replace=False)
         _file_paths_noisy_sample: List[str] = np.random.choice(_file_paths_noisy, _total_samples, replace=False)
-        for i in range(0, _batches - 1, 1):
+        for i in range(0, self.n_batches - 1, 1):
             _batch_clean: List[str] = _file_paths_clean_sample[i * self.batch_size:(i + 1) * self.batch_size]
             _batch_noisy: List[str] = _file_paths_noisy_sample[i * self.batch_size:(i + 1) * self.batch_size]
             _images_clean, _images_noisy = [], []

@@ -2,6 +2,7 @@
 Build & train cycle-gan model (Generative Adversarial Network)
 """
 
+from .utils import ImageProcessor, ReflectionPadding2D
 from keras_contrib.layers.normalization.instancenormalization import InstanceNormalization
 from keras.initializers.initializers_v2 import (
     Constant, HeNormal, HeUniform, GlorotNormal, GlorotUniform, LecunNormal, LecunUniform, Ones, Orthogonal, RandomNormal, RandomUniform, TruncatedNormal, Zeros
@@ -11,7 +12,7 @@ from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D, Conv2DTranspose
 from keras.models import load_model, Model
 from tensorflow.keras.optimizers import Adam, RMSprop, SGD
-from .utils import ImageProcessor, ReflectionPadding2D
+from typing import List
 
 import datetime
 import numpy as np
@@ -285,6 +286,7 @@ class CycleGAN:
         self.dropout_rate_moe_fc_gated_net: float = dropout_rate_moe_fc_gated_net
         self.n_noise_types_moe_fc_classifier: int = n_noise_types_moe_fc_classifier
         self.dropout_rate_moe_fc_classifier: float = dropout_rate_moe_fc_classifier
+        self.print_model_architecture: bool = print_model_architecture
         self.discriminator_patch: tuple = None
         self.discriminator_A: Model = None
         self.discriminator_B: Model = None
@@ -292,7 +294,11 @@ class CycleGAN:
         self.generator_B: Model = None
         self.combined_model: Model = None
         self.model_name: str = None
-        self.print_model_architecture: bool = print_model_architecture
+        self.discriminator_loss: List[float] = []
+        self.generator_loss: List[float] = []
+        self.adversarial_loss: List[float] = []
+        self.reconstruction_loss: List[float] = []
+        self.identy_loss: List[float] = []
         # Cycle-consistency loss:
         self.lambda_cycle: float = 10.0
         # Identity loss:
@@ -787,7 +793,11 @@ class CycleGAN:
                                                                       ]
                                                                      )
                 _elapsed_time: datetime = datetime.datetime.now() - _t0
-
+                self.discriminator_loss.append(_discriminator_loss[0])
+                self.generator_loss.append(_generator_loss[0])
+                self.adversarial_loss.append(np.mean(_generator_loss[1:3])[0])
+                self.reconstruction_loss.append(np.mean(_generator_loss[3:5])[0])
+                self.identy_loss.append(np.mean(_generator_loss[5:6])[0])
                 # Print training progress:
                 _print_epoch_status: str = f'[Epoch: {epoch}/{n_epoch}]'
                 _print_batch_status: str = f'[Batch: {batch_i}/{self.image_processor.n_batches}]'

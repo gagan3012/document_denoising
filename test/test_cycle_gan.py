@@ -65,7 +65,9 @@ class TestCycleGAN(unittest.TestCase):
                                         n_channels=1,
                                         generator_type='res',
                                         n_resnet_blocks=6,
-                                        include_moe_layers=True
+                                        include_moe_layers=True,
+                                        n_conv_layers_generator_res_net=0,
+                                        print_model_architecture=False
                                         )
         _cycle_gan.train(model_output_path='./data/results_res_net6_moe', n_epoch=_n_epoch, checkpoint_epoch_interval=5)
         self.assertTrue(expr=round(len(_cycle_gan.generator_loss) / _cycle_gan.image_processor.n_batches, 0) == _n_epoch)
@@ -80,6 +82,7 @@ class TestCycleGAN(unittest.TestCase):
                                         n_channels=1,
                                         generator_type='res',
                                         n_resnet_blocks=9,
+                                        n_conv_layers_generator_res_net=0,
                                         include_moe_layers=True
                                         )
         _cycle_gan.train(model_output_path='./data/results_res_net9_moe', n_epoch=_n_epoch, checkpoint_epoch_interval=5)

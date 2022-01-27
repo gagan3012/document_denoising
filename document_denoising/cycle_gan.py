@@ -237,7 +237,7 @@ class CycleGAN:
                                                  adjustment=None
                                                  )
         if initializer == 'constant':
-            self.initializer: keras.initializers.initializers_v2 = Constant(value=0)
+            self.initializer: keras.initializers.initializers_v2 = Constant(value=2)
         elif initializer == 'he_normal':
             self.initializer: keras.initializers.initializers_v2 = HeNormal(seed=1234)
         elif initializer == 'he_uniform':

@@ -2,10 +2,12 @@
 Utility functions
 """
 
-from PIL import Image
+from glob import glob
 from tensorflow import pad
 from tensorflow.keras.layers import Layer
+from typing import List, Tuple
 
+import cv2
 import numpy as np
 
 
@@ -14,76 +16,124 @@ class ImageProcessor:
     Class for processing, loading and saving document images
     """
     def __init__(self,
-                 file_path_clean
+                 file_path_clean_images: str,
+                 file_path_noisy_images: str,
+                 n_channels: int = 0,
+                 batch_size: int = 1,
+                 image_resolution: tuple = None,
+                 flip: bool = True,
+                 crop: Tuple[Tuple[int, int], Tuple[int, int]] = None
                  ):
-        self.dataset_name = dataset_name
-        self.img_res = img_res
+        """
+        :param file_path_clean_images: str
+            Complete file path of the clean images
 
-    def load_data(self, domain, batch_size=1, is_testing=False):
-        data_type = "train%s" % domain if not is_testing else "test%s" % domain
-        path = glob('./%s/%s/*' % (self.dataset_name, data_type))
+        :param file_path_noisy_images: str
+            Complete file path of the noisy images
 
-        batch_images = np.random.choice(path, size=batch_size)
+        :param n_channels: int
+            Number of channels of the image
+                -> 0: gray
+                -> 3: color (rgb)
 
-        imgs = []
-        for img_path in batch_images:
-            img = self.imread(img_path)
-            #if not is_testing:
-                #img = resize(img, self.img_res)
+        :param batch_size: int
+            Batch size
 
-                #if np.random.random() > 0.5:
-                #    img = np.fliplr(img)
-            #else:
-            #    img = resize(img, self.img_res)
-            imgs.append(img)
+        :param image_resolution: tuple
+            Force resizing image into given resolution
 
-        imgs = np.array(imgs) / 127.5 - 1.
+        :param flip: bool
+            Whether to flip image based on probability distribution or not
 
-        return imgs
+        :parm crop: Tuple[Tuple[int, int], Tuple[int, int]]
+            Define image cropping
+        """
+        self.file_path_clean_images: str = file_path_clean_images
+        self.file_path_noisy_images: str = file_path_noisy_images
+        self.n_channels: int = cv2.IMREAD_COLOR if n_channels > 0 else cv2.IMREAD_GRAYSCALE
+        self.batch_size: int = batch_size
+        self.image_resolution: tuple = image_resolution
+        self.flip: bool = flip
+        self.crop: Tuple[Tuple[int, int], Tuple[int, int]] = crop
 
-    def load_batch(self, batch_size=1, is_testing=False):
-        data_type = "train" if not is_testing else "test"
-        path_A = glob('./%s/%sA/*' % (self.dataset_name, data_type))
-        path_B = glob('./%s/%sB/*' % (self.dataset_name, data_type))
+    @staticmethod
+    def _normalize(images: np.array) -> np.array:
+        """
+        Normalize images
+        """
+        return images / 127.5 - 1.0
 
-        self.n_batches = int(min(len(path_A), len(path_B)) / batch_size)
-        total_samples = self.n_batches * batch_size
+    def _read_image(self, file_path: str) -> np.array:
+        """
+        Read image
 
-        # Sample n_batches * batch_size from each path list so that model sees all
-        # samples from both domains
-        path_A = np.random.choice(path_A, total_samples, replace=False)
-        path_B = np.random.choice(path_B, total_samples, replace=False)
+        :param file_path: str
+            Complete file path of the image to read
 
-        for i in range(self.n_batches-1):
-            batch_A = path_A[i*batch_size:(i+1)*batch_size]
-            batch_B = path_B[i*batch_size:(i+1)*batch_size]
-            imgs_A, imgs_B = [], []
-            for img_A, img_B in zip(batch_A, batch_B):
-                img_A = self.imread(img_A)
-                img_B = self.imread(img_B)
+        :return np.array
+            Image
+        """
+        _image: cv2 = cv2.imread(filename=file_path, flags=self.n_channels)
+        if self.crop is not None:
+            _iamge = _image[self.crop[0][0]:self.crop[0][1], self.crop[1][0]:self.crop[1][1]]
+        if self.image_resolution is not None:
+            _image = cv2.resize(src=_image, dsize=self.image_resolution, dst=None, fx=None, fy=None, interpolation=None)
+        if self.flip:
+            if np.random.random() > 0.5:
+                if np.random.random() > 0.5:
+                    _direction: int = 0
+                else:
+                    _direction: int = 1
+                _image = cv2.flip(src=_image, flipCode=_direction, dst=None)
+        return _image
 
-                #img_A = resize(img_A, self.img_res)
-                #img_B = resize(img_B, self.img_res)
+    def load_batch(self) -> Tuple[np.array, np.array]:
+        """
+        Load batch images for each group (clean & noisy) separately
 
-                #if not is_testing and np.random.random() > 0.5:
-                        #img_A = np.fliplr(img_A)
-                        #img_B = np.fliplr(img_B)
+        :return Tuple[np.array, np.array]
+            Arrays of clean & noisy images
+        """
+        _file_paths_clean: List[str] = glob(f'./{self.file_path_clean_images}/*')
+        _file_paths_noisy: List[str] = glob(f'./{self.file_path_noisy_images}/*')
+        _batches: int = int(min(len(_file_paths_clean), len(_file_paths_noisy)) / self.batch_size)
+        _total_samples: int = _batches * self.batch_size
+        _file_paths_clean_sample: List[str] = np.random.choice(_file_paths_clean, _total_samples, replace=False)
+        _file_paths_noisy_sample: List[str] = np.random.choice(_file_paths_noisy, _total_samples, replace=False)
+        for i in range(0, _batches - 1, 1):
+            _batch_clean: List[str] = _file_paths_clean_sample[i * self.batch_size:(i + 1) * self.batch_size]
+            _batch_noisy: List[str] = _file_paths_noisy_sample[i * self.batch_size:(i + 1) * self.batch_size]
+            _images_clean, _images_noisy = [], []
+            for path_image_clean, path_image_noisy in zip(_batch_clean, _batch_noisy):
+                _images_clean.append(self._read_image(file_path=path_image_clean))
+                _images_noisy.append(self._read_image(file_path=path_image_noisy))
+            yield self._normalize(np.array(_images_clean)), self._normalize(np.array(_images_noisy))
 
-                imgs_A.append(img_A)
-                imgs_B.append(img_B)
+    def load_images(self) -> Tuple[List[str], np.array]:
+        """
+        Load images without batching
 
-            imgs_A = np.array(imgs_A) / 127.5 - 1.
-            imgs_B = np.array(imgs_B) / 127.5 - 1.
+        :return Tuple[List[str], np.array]
+            List of image file names & array of loaded images
+        """
+        _file_paths_noisy: List[str] = glob(f'./{self.file_path_noisy_images}/*')
+        _images_noisy: List[str] = []
+        for path_image_noisy in _file_paths_noisy:
+            _images_noisy.append(self._read_image(file_path=path_image_noisy))
+        yield _file_paths_noisy, self._normalize(np.array(_images_noisy))
 
-            yield imgs_A, imgs_B
+    @staticmethod
+    def save_image(image: np.array, output_file_path: str):
+        """
+        Save image
 
-    def load_img(self, path):
-        img = self.imread(path)
-        img = img / 127.5 - 1.
-        return img[np.newaxis, :, :, :]
+        :param image: np.array
+            Image to save
 
-    def imread(self, path):
-        return np.array(Image.open(path).convert('L').resize(size=self.img_res))
+        :parm output_file_path: str
+            Complete file path of the output image
+        """
+        cv2.imwrite(filename=output_file_path, img=image, params=None)
 
 
 class ConstantPadding2D(Layer):

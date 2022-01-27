@@ -50,7 +50,7 @@ class ImageProcessor:
         """
         self.file_path_clean_images: str = file_path_clean_images
         self.file_path_noisy_images: str = file_path_noisy_images
-        self.n_channels: int = cv2.IMREAD_COLOR if n_channels > 0 else cv2.IMREAD_GRAYSCALE
+        self.n_channels: int = cv2.IMREAD_COLOR if n_channels > 1 else cv2.IMREAD_GRAYSCALE
         self.batch_size: int = batch_size
         self.n_batches: int = 0
         self.image_resolution: tuple = image_resolution

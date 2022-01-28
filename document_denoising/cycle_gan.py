@@ -210,9 +210,10 @@ class CycleGAN:
                                         amsgrad=False
                                         )
         self.batch_size: int = batch_size if batch_size > 0 else 1
+        self.discriminator_batch_size: int = self.batch_size
+        self.generator_batch_size: int = self.batch_size
         if self.batch_size == 1:
             self.normalizer = InstanceNormalization
-
         else:
             self.normalizer = BatchNormalization
         if initializer == 'constant':
@@ -266,6 +267,7 @@ class CycleGAN:
         self.n_noise_types_moe_fc_classifier: int = n_noise_types_moe_fc_classifier
         self.dropout_rate_moe_fc_classifier: float = dropout_rate_moe_fc_classifier
         self.print_model_architecture: bool = print_model_architecture
+        self.training_type: str = None
         self.discriminator_patch: tuple = None
         self.discriminator_A: Model = None
         self.discriminator_B: Model = None
@@ -274,7 +276,7 @@ class CycleGAN:
         self.combined_model: Model = None
         self.model_name: str = None
         self.training_time: str = None
-        self.elapsed_time: List[str] = None
+        self.elapsed_time: List[str] = []
         self.epoch: List[int] = []
         self.batch: List[int] = []
         self.discriminator_loss: List[float] = []
@@ -421,8 +423,10 @@ class CycleGAN:
         :return: Model
             Generator network model
         """
+        # U-Network:
         if self.generator_type == 'u':
             return self._u_net()
+        # Residual Network:
         elif self.generator_type == 'res':
             # Mixture of experts layers (MoE):
             if self.include_moe_layers:
@@ -438,7 +442,7 @@ class CycleGAN:
                 _gate = None
                 _clf = None
             if self.include_moe_layers and self.n_conv_layers_generator_res_net == 0:
-                _n_filters: int = self.start_n_filters_generator // 2
+                _n_filters: int = self.start_n_filters_generator * 2
                 _strides: tuple = (int(self.image_height / K.int_shape(_embedder[0])[0]), int(self.image_width / K.int_shape(_embedder[0])[1]))
             else:
                 _n_filters: int = self.start_n_filters_generator
@@ -458,10 +462,12 @@ class CycleGAN:
                     _n_filters *= 2
                 _g = self._convolutional_layer_generator_down_sampling(input_layer=_g, n_filters=_n_filters)
             # Residual Network Blocks:
-            for _ in range(0, self.n_resnet_blocks, 1):
+            for r in range(0, self.n_resnet_blocks, 1):
                 _g = self._resnet_block(input_layer=_g, n_filters=_n_filters)
                 if self.include_moe_layers:
                     _g = Concatenate()([_g, _gate])
+                    if r == 0:
+                        _n_filters *= 2
             # Up-Sampling:
             for _ in range(0, self.n_conv_layers_generator_res_net, 1):
                 if _n_filters > self.start_n_filters_generator:
@@ -687,11 +693,14 @@ class CycleGAN:
             if self.include_moe_layers:
                 _cycle_gan_architecture = f'{_cycle_gan_architecture} + Mixture of Experts Layers (MoE)'
         _cycle_gan_training_report: dict = dict(cycle_gan_architecture=_cycle_gan_architecture,
+                                                training_type=self.training_type,
                                                 training_time=self.training_time,
                                                 elapsed_time=self.elapsed_time,
                                                 learning_rate=self.learning_rate,
                                                 epoch=self.epoch,
                                                 batch=self.batch,
+                                                discriminator_batch_size=self.discriminator_batch_size,
+                                                generator_batch_size=self.generator_batch_size,
                                                 batch_size=self.batch_size,
                                                 batches=self.image_processor.n_batches,
                                                 image_samples=self.batch_size * self.image_processor.n_batches,
@@ -702,7 +711,7 @@ class CycleGAN:
                                                 reconstruction_loss=self.reconstruction_loss,
                                                 identity_loss=self.identy_loss
                                                 )
-        with open(os.path.join(metric_output_path, 'cycle_gan_training_report.json'), 'w', encoding='utf-8') as file:
+        with open(os.path.join(report_output_path, 'cycle_gan_training_report.json'), 'w', encoding='utf-8') as file:
             json.dump(obj=_cycle_gan_training_report, fp=file, ensure_ascii=False)
 
     def _save_models(self, model_output_path: str):
@@ -823,6 +832,7 @@ class CycleGAN:
         :param checkpoint_epoch_interval: int
             Number of epoch intervals for saving model checkpoint
         """
+        self.training_type = 'synchron'
         _t0: datetime = datetime.datetime.now()
         # Adversarial loss ground truths:
         _valid: np.array = np.ones((self.batch_size, ) + self.discriminator_patch)
@@ -869,6 +879,123 @@ class CycleGAN:
                 _print_discriminator_loss_status: str = f'[D loss: {self.discriminator_loss[-1]}, acc: {self.discriminator_accuracy[-1]}]'
                 _print_generator_loss_status: str = f'[G loss: {self.generator_loss[-1]}, adv: {self.adversarial_loss[-1]}, recon: {self.reconstruction_loss[-1]}, id: {self.identy_loss[-1]}]'
                 print(_print_epoch_status, _print_batch_status, _print_discriminator_loss_status, _print_generator_loss_status, f'time: {_elapsed_time}')
+            # Save checkpoint:
+            if (epoch % checkpoint_epoch_interval == 0) and (epoch > 0):
+                self._save_models(model_output_path=model_output_path)
+        # Save fully trained models:
+        self._save_models(model_output_path=model_output_path)
+        # Save training report:
+        self.training_time = self.elapsed_time[-1]
+        self._save_training_report(report_output_path=model_output_path)
+
+    def train_asynchron(self,
+                        model_output_path: str,
+                        n_epoch: int = 300,
+                        discriminator_batch_size: int = 50,
+                        generator_batch_size: int = 30,
+                        checkpoint_epoch_interval: int = 5
+                        ):
+        """
+        Train cycle-gan models asynchronously
+
+        :param model_output_path: str
+            Complete file path of the model output
+
+        :param n_epoch: int
+            Number of epochs to train
+
+        :param discriminator_batch_size: int
+            Batch size of to update discriminator
+
+        :param generator_batch_size: int
+            Batch size of to update generator
+
+        :param checkpoint_epoch_interval: int
+            Number of epoch intervals for saving model checkpoint
+        """
+        self.training_type = 'asynchron'
+        self.discriminator_batch_size = discriminator_batch_size if discriminator_batch_size > 0 else 50
+        self.generator_batch_size = generator_batch_size if generator_batch_size > 0 else 50
+        _t0: datetime = datetime.datetime.now()
+        # Adversarial loss ground truths:
+        _valid: np.array = np.ones((1,) + self.discriminator_patch)
+        _fake: np.array = np.zeros((1,) + self.discriminator_patch)
+        _discriminator_batch_real_A: List[np.array] = []
+        _discriminator_batch_fake_A: List[np.array] = []
+        _discriminator_batch_real_B: List[np.array] = []
+        _discriminator_batch_fake_B: List[np.array] = []
+        _generator_batch_real: List[np.array] = []
+        _generator_batch_noisy: List[np.array] = []
+        _n_updates_discriminator: int = 0
+        _n_updates_generator: int = 0
+        _print_losses: bool = False
+        for epoch in range(n_epoch):
+            for batch_i, (images_A, images_B) in enumerate(self.image_processor.load_batch()):
+                _discriminator_batch_real_A.append(images_A)
+                _discriminator_batch_real_B.append(images_B)
+                _generator_batch_real.append(images_A)
+                _generator_batch_noisy.append(images_B)
+                # Translate images to opposite domain:
+                _fake_B = self.generator_A.predict(images_A)
+                _fake_A = self.generator_B.predict(images_B)
+                _discriminator_batch_fake_A.append(_fake_A)
+                _discriminator_batch_fake_B.append(_fake_B)
+                if len(_discriminator_batch_real_A) == self.discriminator_batch_size:
+                    _n_updates_discriminator += 1
+                    for (d_real_A, d_fake_A, d_real_B, d_fake_B) in zip(_discriminator_batch_real_A,
+                                                                        _discriminator_batch_fake_A,
+                                                                        _discriminator_batch_real_B,
+                                                                        _discriminator_batch_fake_B
+                                                                        ):
+                        # Train the discriminators (original images = real / translated = Fake):
+                        _discriminator_loss_real_A = self.discriminator_A.train_on_batch(d_real_A, _valid)
+                        _discriminator_loss_fake_A = self.discriminator_A.train_on_batch(d_fake_A, _fake)
+                        _discriminator_loss_A = 0.5 * np.add(_discriminator_loss_real_A, _discriminator_loss_fake_A)
+                        _discriminator_loss_real_B = self.discriminator_B.train_on_batch(d_real_B, _valid)
+                        _discriminator_loss_fake_B = self.discriminator_B.train_on_batch(d_fake_B, _fake)
+                        _discriminator_loss_B = 0.5 * np.add(_discriminator_loss_real_B, _discriminator_loss_fake_B)
+                        # Total discriminator loss:
+                        _discriminator_loss = 0.5 * np.add(_discriminator_loss_A, _discriminator_loss_B)
+                        self.discriminator_loss.append(round(_discriminator_loss[0], 8))
+                        self.discriminator_accuracy.append(round(100 * _discriminator_loss[1], 4))
+                    _discriminator_batch_real_A = []
+                    _discriminator_batch_real_B = []
+                    _discriminator_batch_fake_A = []
+                    _discriminator_batch_fake_B = []
+                    _print_losses = True
+                if len(_generator_batch_real) == self.generator_batch_size:
+                    _n_updates_generator += 1
+                    for (g_real,  g_noisy) in zip(_generator_batch_real, _generator_batch_noisy):
+                        # Train the generators:
+                        _generator_loss = self.combined_model.train_on_batch([g_real, g_noisy],
+                                                                             [_valid,
+                                                                              _valid,
+                                                                              g_real,
+                                                                              g_noisy,
+                                                                              g_real,
+                                                                              g_noisy
+                                                                              ]
+                                                                             )
+                        self.generator_loss.append(round(_generator_loss[0], 8))
+                        self.adversarial_loss.append(round(np.mean(_generator_loss[1:3]), 8))
+                        self.reconstruction_loss.append(round(np.mean(_generator_loss[3:5]), 8))
+                        self.identy_loss.append(round(np.mean(_generator_loss[5:6]), 8))
+                    _generator_batch_real = []
+                    _generator_batch_noisy = []
+                    _print_losses = True
+                _elapsed_time: datetime = datetime.datetime.now() - _t0
+                self.elapsed_time.append(str(_elapsed_time))
+                self.epoch.append(epoch)
+                self.batch.append(batch_i)
+                # Print training progress:
+                if _print_losses and len(self.discriminator_loss) > 0 and len(self.generator_loss) > 0:
+                    _print_epoch_status: str = f'[Epoch: {epoch}/{n_epoch}]'
+                    _print_batch_status: str = f'[Batch: {batch_i}/{self.image_processor.n_batches}]'
+                    _print_discriminator_loss_status: str = f'[D loss: {self.discriminator_loss[-1]}, acc: {self.discriminator_accuracy[-1]}]'
+                    _print_generator_loss_status: str = f'[G loss: {self.generator_loss[-1]}, adv: {self.adversarial_loss[-1]}, recon: {self.reconstruction_loss[-1]}, id: {self.identy_loss[-1]}]'
+                    print(_print_epoch_status, _print_batch_status, _print_discriminator_loss_status,
+                          _print_generator_loss_status, f'time: {_elapsed_time}')
+                    _print_losses = False
             # Save checkpoint:
             if (epoch % checkpoint_epoch_interval == 0) and (epoch > 0):
                 self._save_models(model_output_path=model_output_path)

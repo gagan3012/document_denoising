@@ -18,7 +18,7 @@ class ImageProcessor:
     def __init__(self,
                  file_path_clean_images: str,
                  file_path_noisy_images: str,
-                 n_channels: int = 0,
+                 n_channels: int = 1,
                  batch_size: int = 1,
                  image_resolution: tuple = None,
                  flip: bool = True,

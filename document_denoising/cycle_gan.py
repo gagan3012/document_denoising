@@ -1,7 +1,6 @@
 """
 Build & train cycle-gan model (Generative Adversarial Network)
 """
-import tensorflow
 
 from .utils import ImageProcessor, ReflectionPadding2D
 from keras_contrib.layers.normalization.instancenormalization import InstanceNormalization
@@ -17,15 +16,16 @@ from tensorflow.keras.optimizers import Adam, RMSprop, SGD
 from typing import List
 
 import datetime
-import numpy as np
+import json
 import keras
 import keras.backend as K
+import numpy as np
 import os
 
 
 class CycleGANException(Exception):
     """
-    Class for handling exceptions of class CycleGAN
+    Class for handling exceptions for class CycleGAN
     """
     pass
 
@@ -50,13 +50,13 @@ class CycleGAN:
                  dropout_rate_discriminator: float = 0.0,
                  start_n_filters_generator: int = 32,
                  max_n_filters_generator: int = 512,
-                 generator_type: str = 'u',
+                 generator_type: str = 'res',
                  n_resnet_blocks: int = 9,
-                 n_conv_layers_generator_res_net: int = 2,
+                 n_conv_layers_generator_res_net: int = 0,
                  n_conv_layers_generator_u_net: int = 3,
                  dropout_rate_generator_down_sampling: float = 0.0,
                  dropout_rate_generator_up_sampling: float = 0.0,
-                 include_moe_layers: bool = False,
+                 include_moe_layers: bool = True,
                  n_conv_layers_moe_embedder: int = 6,
                  dropout_rate_moe_embedder: float = 0.0,
                  n_hidden_layers_moe_fc_gated_net: int = 1,
@@ -273,6 +273,10 @@ class CycleGAN:
         self.generator_B: Model = None
         self.combined_model: Model = None
         self.model_name: str = None
+        self.training_time: str = None
+        self.elapsed_time: List[str] = None
+        self.epoch: List[int] = []
+        self.batch: List[int] = []
         self.discriminator_loss: List[float] = []
         self.discriminator_accuracy: List[float] = []
         self.generator_loss: List[float] = []
@@ -668,6 +672,39 @@ class CycleGAN:
         _r = self.normalizer()(_r)
         return Concatenate()([_r, input_layer])
 
+    def _save_training_report(self, report_output_path: str):
+        """
+        Save cycle-gan training report
+
+        :param report_output_path: str
+            Complete file path of the training report output
+        """
+        _cycle_gan_architecture: str = 'Discriminator: PatchGAN | '
+        if self.generator_type == 'u':
+            _cycle_gan_architecture = f'{_cycle_gan_architecture}Generator: U-Network'
+        else:
+            _cycle_gan_architecture = f'{_cycle_gan_architecture}Generator: Residual Network {self.n_resnet_blocks} Blocks'
+            if self.include_moe_layers:
+                _cycle_gan_architecture = f'{_cycle_gan_architecture} + Mixture of Experts Layers (MoE)'
+        _cycle_gan_training_report: dict = dict(cycle_gan_architecture=_cycle_gan_architecture,
+                                                training_time=self.training_time,
+                                                elapsed_time=self.elapsed_time,
+                                                learning_rate=self.learning_rate,
+                                                epoch=self.epoch,
+                                                batch=self.batch,
+                                                batch_size=self.batch_size,
+                                                batches=self.image_processor.n_batches,
+                                                image_samples=self.batch_size * self.image_processor.n_batches,
+                                                discriminator_loss=self.discriminator_loss,
+                                                discriminator_accuracy=self.discriminator_accuracy,
+                                                generator_loss=self.generator_loss,
+                                                adversarial_loss=self.adversarial_loss,
+                                                reconstruction_loss=self.reconstruction_loss,
+                                                identity_loss=self.identy_loss
+                                                )
+        with open(os.path.join(metric_output_path, 'cycle_gan_training_report.json'), 'w', encoding='utf-8') as file:
+            json.dump(obj=_cycle_gan_training_report, fp=file, ensure_ascii=False)
+
     def _save_models(self, model_output_path: str):
         """
         Save cycle-gan models
@@ -817,6 +854,9 @@ class CycleGAN:
                                                                       ]
                                                                      )
                 _elapsed_time: datetime = datetime.datetime.now() - _t0
+                self.elapsed_time.append(str(_elapsed_time))
+                self.epoch.append(epoch)
+                self.batch.append(batch_i)
                 self.discriminator_loss.append(round(_discriminator_loss[0], 8))
                 self.discriminator_accuracy.append(round(100 * _discriminator_loss[1], 4))
                 self.generator_loss.append(round(_generator_loss[0], 8))
@@ -834,3 +874,6 @@ class CycleGAN:
                 self._save_models(model_output_path=model_output_path)
         # Save fully trained models:
         self._save_models(model_output_path=model_output_path)
+        # Save training report:
+        self.training_time = self.elapsed_time[-1]
+        self._save_training_report(report_output_path=model_output_path)

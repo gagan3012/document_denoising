@@ -83,7 +83,6 @@ class TestCycleGAN(unittest.TestCase):
                                         generator_type='res',
                                         n_resnet_blocks=9,
                                         n_conv_layers_generator_res_net=0,
-                                        start_n_filters_generator=32,
                                         include_moe_layers=True
                                         )
         _cycle_gan.train(model_output_path='./data/results_res_net9_moe', n_epoch=_n_epoch, checkpoint_epoch_interval=5)

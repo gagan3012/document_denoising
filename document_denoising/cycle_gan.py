@@ -1,7 +1,6 @@
 """
 Build & train cycle-gan model (Generative Adversarial Network)
 """
-import tensorflow
 
 from .utils import ImageProcessor, ReflectionPadding2D
 from keras_contrib.layers.normalization.instancenormalization import InstanceNormalization
@@ -17,15 +16,16 @@ from tensorflow.keras.optimizers import Adam, RMSprop, SGD
 from typing import List
 
 import datetime
-import numpy as np
+import json
 import keras
 import keras.backend as K
+import numpy as np
 import os
 
 
 class CycleGANException(Exception):
     """
-    Class for handling exceptions of class CycleGAN
+    Class for handling exceptions for class CycleGAN
     """
     pass
 
@@ -50,13 +50,13 @@ class CycleGAN:
                  dropout_rate_discriminator: float = 0.0,
                  start_n_filters_generator: int = 32,
                  max_n_filters_generator: int = 512,
-                 generator_type: str = 'u',
+                 generator_type: str = 'res',
                  n_resnet_blocks: int = 9,
-                 n_conv_layers_generator_res_net: int = 2,
+                 n_conv_layers_generator_res_net: int = 0,
                  n_conv_layers_generator_u_net: int = 3,
                  dropout_rate_generator_down_sampling: float = 0.0,
                  dropout_rate_generator_up_sampling: float = 0.0,
-                 include_moe_layers: bool = False,
+                 include_moe_layers: bool = True,
                  n_conv_layers_moe_embedder: int = 6,
                  dropout_rate_moe_embedder: float = 0.0,
                  n_hidden_layers_moe_fc_gated_net: int = 1,
@@ -64,6 +64,7 @@ class CycleGAN:
                  dropout_rate_moe_fc_gated_net: float = 0.0,
                  n_noise_types_moe_fc_classifier: int = 4,
                  dropout_rate_moe_fc_classifier: float = 0.0,
+                 ignore_moe_fc_classifier: bool = True,
                  print_model_architecture: bool = True
                  ):
         """
@@ -169,6 +170,9 @@ class CycleGAN:
         :param dropout_rate_moe_fc_classifier: float
             Dropout rate used after each convolutional layer in mixture of experts fully connected classification network
 
+        :param ignore_moe_fc_classifier: bool
+            Whether to ignore mixture of experts fully connected classifier or not (because classifier is used for evaluation purposes only)
+
         :param print_model_architecture: bool
             Whether to print architecture of cycle-gan model components (discriminators & generators) or not
         """
@@ -253,6 +257,7 @@ class CycleGAN:
         self.dropout_rate_generator_down_sampling: float = dropout_rate_generator_down_sampling if dropout_rate_generator_down_sampling >= 0 else 0.0
         self.dropout_rate_generator_up_sampling: float = dropout_rate_generator_up_sampling if dropout_rate_generator_up_sampling >= 0 else 0.0
         self.include_moe_layers: bool = include_moe_layers
+        self.ignore_moe_fc_classifier: bool = ignore_moe_fc_classifier
         self.n_conv_layers_moe_embedder: int = n_conv_layers_moe_embedder
         self.dropout_rate_moe_embedder: float = dropout_rate_moe_embedder
         self.n_hidden_layers_moe_fc_gated_net: int = n_hidden_layers_moe_fc_gated_net
@@ -268,6 +273,10 @@ class CycleGAN:
         self.generator_B: Model = None
         self.combined_model: Model = None
         self.model_name: str = None
+        self.training_time: str = None
+        self.elapsed_time: List[str] = None
+        self.epoch: List[int] = []
+        self.batch: List[int] = []
         self.discriminator_loss: List[float] = []
         self.discriminator_accuracy: List[float] = []
         self.generator_loss: List[float] = []
@@ -415,16 +424,29 @@ class CycleGAN:
         if self.generator_type == 'u':
             return self._u_net()
         elif self.generator_type == 'res':
-            # embedder layer
+            # Mixture of experts layers (MoE):
             if self.include_moe_layers:
+                # Noise Type Embedding:
                 _embedder = self._embedder()
+                # Gated network:
+                _gate = self._gated_network(input_layer=_embedder, units=64)
+                # Noise Type Classifier:
+                if not self.ignore_moe_fc_classifier:
+                    _clf = self._moe_classifier(embedding_layer=_embedder)
             else:
                 _embedder = None
-            _n_filters: int = self.start_n_filters_generator
+                _gate = None
+                _clf = None
+            if self.include_moe_layers and self.n_conv_layers_generator_res_net == 0:
+                _n_filters: int = self.start_n_filters_generator // 2
+                _strides: tuple = (int(self.image_height / K.int_shape(_embedder[0])[0]), int(self.image_width / K.int_shape(_embedder[0])[1]))
+            else:
+                _n_filters: int = self.start_n_filters_generator
+                _strides: tuple = (1, 1)
             #_g = ReflectionPadding2D(padding=(1, 1))(self.image_shape)
-            _g = Conv2D(filters=_n_filters,
+            _g = Conv2D(filters=self.start_n_filters_generator,
                         kernel_size=(7, 7),
-                        strides=(1, 1),
+                        strides=_strides,
                         padding='same',
                         kernel_initializer=self.initializer
                         )(self.image_shape)
@@ -435,16 +457,18 @@ class CycleGAN:
                 if _n_filters < self.max_n_filters_generator:
                     _n_filters *= 2
                 _g = self._convolutional_layer_generator_down_sampling(input_layer=_g, n_filters=_n_filters)
+            # Residual Network Blocks:
             for _ in range(0, self.n_resnet_blocks, 1):
                 _g = self._resnet_block(input_layer=_g, n_filters=_n_filters)
                 if self.include_moe_layers:
-                    # gated network
-                    _g = self._gated_network(input_layer=_embedder, units=64)
+                    _g = Concatenate()([_g, _gate])
             # Up-Sampling:
             for _ in range(0, self.n_conv_layers_generator_res_net, 1):
                 if _n_filters > self.start_n_filters_generator:
                     _n_filters //= 2
                 _g = self._convolutional_layer_generator_up_sampling(input_layer=_g, skip_layer=None, n_filters=_n_filters)
+            if self.include_moe_layers and self.n_conv_layers_generator_res_net == 0:
+                _g = UpSampling2D(size=int(self.image_height / K.int_shape(_g[0])[0]))(_g)
             #_g = ReflectionPadding2D(padding=(1, 1))(_g)
             _g = Conv2D(filters=1,
                         kernel_size=(7, 7),
@@ -565,18 +589,20 @@ class CycleGAN:
         :return: keras_tensor.KerasTensor
             Processed keras tensor
         """
-        _e = Conv2D(filters=self.image_height,
+        _n_filters: int = self.image_height
+        _e = Conv2D(filters=_n_filters,
                     kernel_size=(3, 3),
-                    strides=(1, 1),
+                    strides=(4, 4),
                     padding='same',
                     kernel_initializer=self.initializer
                     )(self.image_shape)
         _e = self.normalizer()(_e)
         _e = ReLU(max_value=None, negative_slope=0, threshold=0)(_e)
-        for _ in range(0, self.n_conv_layers_moe_embedder - 1, 1):
-            _e = self._convolutional_layer_generator_embedder(input_layer=_e, n_filters=self.image_height)
-        g = Concatenate()([_e, self.image_shape])
-        return g
+        for _ in range(0, self.n_conv_layers_moe_embedder, 1):
+            if _n_filters > self.n_noise_types_moe_fc_classifier:
+                _n_filters //= 2
+            _e = self._convolutional_layer_generator_embedder(input_layer=_e, n_filters=_n_filters)
+        return _e
 
     def _gated_network(self, input_layer, units: int = 64) -> keras_tensor.KerasTensor:
         """
@@ -645,6 +671,39 @@ class CycleGAN:
                     )(_r)
         _r = self.normalizer()(_r)
         return Concatenate()([_r, input_layer])
+
+    def _save_training_report(self, report_output_path: str):
+        """
+        Save cycle-gan training report
+
+        :param report_output_path: str
+            Complete file path of the training report output
+        """
+        _cycle_gan_architecture: str = 'Discriminator: PatchGAN | '
+        if self.generator_type == 'u':
+            _cycle_gan_architecture = f'{_cycle_gan_architecture}Generator: U-Network'
+        else:
+            _cycle_gan_architecture = f'{_cycle_gan_architecture}Generator: Residual Network {self.n_resnet_blocks} Blocks'
+            if self.include_moe_layers:
+                _cycle_gan_architecture = f'{_cycle_gan_architecture} + Mixture of Experts Layers (MoE)'
+        _cycle_gan_training_report: dict = dict(cycle_gan_architecture=_cycle_gan_architecture,
+                                                training_time=self.training_time,
+                                                elapsed_time=self.elapsed_time,
+                                                learning_rate=self.learning_rate,
+                                                epoch=self.epoch,
+                                                batch=self.batch,
+                                                batch_size=self.batch_size,
+                                                batches=self.image_processor.n_batches,
+                                                image_samples=self.batch_size * self.image_processor.n_batches,
+                                                discriminator_loss=self.discriminator_loss,
+                                                discriminator_accuracy=self.discriminator_accuracy,
+                                                generator_loss=self.generator_loss,
+                                                adversarial_loss=self.adversarial_loss,
+                                                reconstruction_loss=self.reconstruction_loss,
+                                                identity_loss=self.identy_loss
+                                                )
+        with open(os.path.join(metric_output_path, 'cycle_gan_training_report.json'), 'w', encoding='utf-8') as file:
+            json.dump(obj=_cycle_gan_training_report, fp=file, ensure_ascii=False)
 
     def _save_models(self, model_output_path: str):
         """
@@ -795,6 +854,9 @@ class CycleGAN:
                                                                       ]
                                                                      )
                 _elapsed_time: datetime = datetime.datetime.now() - _t0
+                self.elapsed_time.append(str(_elapsed_time))
+                self.epoch.append(epoch)
+                self.batch.append(batch_i)
                 self.discriminator_loss.append(round(_discriminator_loss[0], 8))
                 self.discriminator_accuracy.append(round(100 * _discriminator_loss[1], 4))
                 self.generator_loss.append(round(_generator_loss[0], 8))
@@ -812,3 +874,6 @@ class CycleGAN:
                 self._save_models(model_output_path=model_output_path)
         # Save fully trained models:
         self._save_models(model_output_path=model_output_path)
+        # Save training report:
+        self.training_time = self.elapsed_time[-1]
+        self._save_training_report(report_output_path=model_output_path)

@@ -26,7 +26,7 @@ setuptools.setup(
     description='Machine learning algorithms for denoising document images',
     long_description=long_description,
     long_description_content_type='text/markdown',
-    keywords='computer vision machine learning gan autoencoder deep learning',
+    keywords='computer vision machine learning gan autoencoder deep learning ocr',
     license='GNU',
     url='https://github.com/GianniBalistreri/document_denoising',
     include_package_data=True,
@@ -37,7 +37,8 @@ setuptools.setup(
                                          'setup.py'
                                          ]
                   },
-    data_file=[('test', [
+    data_file=[('test', ['test/test_cycle_gan.py',
+                         'test/test_utils.py'
                          ]
                 )],
     classifiers=[

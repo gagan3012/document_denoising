@@ -135,7 +135,7 @@ class ImageProcessor:
         :param image: np.array
             Image to save
 
-        :parm output_file_path: str
+        :param output_file_path: str
             Complete file path of the output image
         """
         cv2.imwrite(filename=output_file_path, img=image, params=None)

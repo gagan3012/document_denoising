@@ -173,7 +173,7 @@ class NoiseGenerator:
         self.labeling: dict = dict(file_name=[], label=[], label_encoding=[])
         self.image_file_names: List[str] = glob(os.path.join(self.file_path_input_clean_images, f'*{self.file_type}'))
 
-    def blur(self, blur_type: str = 'average', kernel_size: tuple = (3, 3)):
+    def blur(self, blur_type: str = 'average', kernel_size: tuple = (9, 9)):
         """
         Generate blurred noise images
 
@@ -190,65 +190,48 @@ class NoiseGenerator:
             _file_name: str = image.split('/')[-1]
             _file_type: str = _file_name.split('.')[-1]
             _image = cv2.imread(filename=image)
-            for (k_x, k_y) in kernel_size:
-                if _blur_type == 'average':
-                    _blurred = cv2.blur(image, (k_x, k_y))
-                elif _blur_type == 'median':
-                    _blurred = cv2.medianBlur(image, k_x)
-                else:
-                    _blurred = None
-                self.labeling['file_name'].append(os.path.join(self.file_path_output_noisy_images,
-                                                               _file_name.split('.')[0],
-                                                               '_blur',
-                                                               _file_type
-                                                               )
+            if _blur_type == 'average':
+                _image = cv2.blur(_image, kernel_size)
+            elif _blur_type == 'median':
+                _image = cv2.medianBlur(_image, kernel_size[0])
+            _output_file_path: str = os.path.join(self.file_path_output_noisy_images,
+                                                  f"{_file_name.split('.')[0]}_blur.{_file_type}"
                                                   )
+            if _output_file_path not in self.labeling['file_name']:
+                self.labeling['file_name'].append(_output_file_path)
                 self.labeling['label'].append('blur')
                 self.labeling['label_encoding'].append('1')
-                cv2.imwrite(filename=self.labeling['file_name'][-1], img=_blurred)
+            cv2.imwrite(filename=_output_file_path, img=_image)
 
-    def fade(self, brightness: int = 20, contrast: int = 20):
+    def fade(self, brightness: int = 20):
         """
         Generate faded noise images
 
         :param brightness: int
             Desired brightness change
-
-        :param contrast: int
-            Desired contrast change
         """
-        _brithness: float = brightness if brightness > 0 else 20
-        _contrast: float = contrast if contrast > 0 else 20
+        _brightness: float = brightness if brightness > 0 else 150
         for image in self.image_file_names:
             _file_name: str = image.split('/')[-1]
             _file_type: str = _file_name.split('.')[-1]
             _image = cv2.imread(filename=image)
-            _contrast_diff: float = (100 - _contrast)
-            if _contrast_diff <= 0.1:
-                _contrast = 99.9
-            _arg: float = math.pi * (((_contrast * _contrast) / 20000) + (3 * _contrast / 200)) / 4
-            _slope: float = 1 + (math.sin(_arg) / math.cos(_arg))
-            if _slope < 0:
-                _slope = 0
-            _pivot: float = (100 - _brithness) / 200
-            _intercept_brigthness: float = _brithness / 100
-            _interecept_contrast: float = _pivot * (1 - _slope)
-            _intercept: float = _intercept_brigthness + _interecept_contrast
-            _image = _image / 255.0
-            _out: np.array = _slope * _image + _intercept
-            _out[_out > 1] = 1
-            _out[_out < 0] = 0
-            self.labeling['file_name'].append(os.path.join(self.file_path_output_noisy_images,
-                                                           _file_name.split('.')[0],
-                                                           '_fade',
-                                                           _file_type
-                                                           )
-                                              )
-            self.labeling['label'].append('fade')
-            self.labeling['label_encoding'].append('2')
-            cv2.imwrite(filename=self.labeling['file_name'][-1], img=_image)
+            _hsv = cv2.cvtColor(_image, cv2.COLOR_BGR2HSV)
+            _h, _s, _v = cv2.split(_hsv)
+            _lim: float = 255 - _brightness
+            _v[_v > _lim] = 255
+            _v[_v <= _lim] += _brightness
+            _final_hsv = cv2.merge((_h, _s, _v))
+            _image = cv2.cvtColor(_final_hsv, cv2.COLOR_HSV2BGR)
+            _output_file_path: str = os.path.join(self.file_path_output_noisy_images,
+                                                  f"{_file_name.split('.')[0]}_fade.{_file_type}"
+                                                  )
+            if _output_file_path not in self.labeling['file_name']:
+                self.labeling['file_name'].append(_output_file_path)
+                self.labeling['label'].append('fade')
+                self.labeling['label_encoding'].append('2')
+            cv2.imwrite(filename=_output_file_path, img=_image)
 
-    def salt_pepper(self, number_of_pixel_edges: tuple = (300, 1000)):
+    def salt_pepper(self, number_of_pixel_edges: tuple = (100000, 500000)):
         """
         Generate salt & pepper noise images
 
@@ -259,7 +242,7 @@ class NoiseGenerator:
             _file_name: str = image.split('/')[-1]
             _file_type: str = _file_name.split('.')[-1]
             _image = cv2.imread(filename=image)
-            _height, _width = _image.shape
+            _height, _width, _ = _image.shape
             _number_of_pixels: int = random.randint(number_of_pixel_edges[0], number_of_pixel_edges[1])
             # White pixels:
             for i in range(0, _number_of_pixels, 1):
@@ -271,15 +254,14 @@ class NoiseGenerator:
                 _y_coord = random.randint(0, _height - 1)
                 _x_coord = random.randint(0, _width - 1)
                 _image[_y_coord][_x_coord] = 0
-            self.labeling['file_name'].append(os.path.join(self.file_path_output_noisy_images,
-                                                           _file_name.split('.')[0],
-                                                           '_salt_pepper',
-                                                           _file_type
-                                                           )
-                                              )
-            self.labeling['label'].append('salt_pepper')
-            self.labeling['label_encoding'].append('3')
-            cv2.imwrite(filename=self.labeling['file_name'][-1], img=_image)
+            _output_file_path: str = os.path.join(self.file_path_output_noisy_images,
+                                                  f"{_file_name.split('.')[0]}_salt_pepper.{_file_type}"
+                                                  )
+            if _output_file_path not in self.labeling['file_name']:
+                self.labeling['file_name'].append(_output_file_path)
+                self.labeling['label'].append('salt_pepper')
+                self.labeling['label_encoding'].append('3')
+            cv2.imwrite(filename=_output_file_path, img=_image)
 
     def save_labels(self, include_image_data):
         """
@@ -324,16 +306,14 @@ class NoiseGenerator:
                 _destination = _image[_top_y:_bottom_y, _left_x:_right_x]
                 _result = cv2.addWeighted(_destination, 1, _watermark, 0.5, 0)
                 _image[_top_y:_bottom_y, _left_x:_right_x] = _result
-                self.labeling['file_name'].append(os.path.join(self.file_path_output_noisy_images,
-                                                               _file_name.split('.')[0],
-                                                               '_watermark_',
-                                                               _file_name_watermark.split('.')[0],
-                                                               _file_type
-                                                               )
-                                                  )
-                self.labeling['label'].append('watermark')
-                self.labeling['label_encoding'].append('4')
-                cv2.imwrite(filename=self.labeling['file_name'][-1], img=_image)
+                _output_file_path: str = os.path.join(self.file_path_output_noisy_images,
+                                                      f"{_file_name.split('.')[0]}_watermark_{_file_name_watermark.split('.')[0]}.{_file_type}"
+                                                      )
+                if _output_file_path not in self.labeling['file_name']:
+                    self.labeling['file_name'].append(_output_file_path)
+                    self.labeling['label'].append('watermark')
+                    self.labeling['label_encoding'].append('4')
+                cv2.imwrite(filename=_output_file_path, img=_image)
 
 
 class ConstantPadding2D(Layer):

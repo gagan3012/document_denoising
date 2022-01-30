@@ -8,7 +8,11 @@ from tensorflow.keras.layers import Layer
 from typing import List, Tuple
 
 import cv2
+import json
+import math
 import numpy as np
+import os
+import random
 
 
 class ImageProcessor:
@@ -135,6 +139,186 @@ class ImageProcessor:
             Complete file path of the output image
         """
         cv2.imwrite(filename=output_file_path, img=image, params=None)
+
+
+class NoiseGenerator:
+    """
+    Class for generating noisy document images used in model training
+    """
+    def __init__(self,
+                 file_path_input_clean_images: str,
+                 file_path_output_noisy_images: str,
+                 file_type: str = None
+                 ):
+        """
+        :param file_path_input_clean_images: str
+            Complete file path of clean input images
+
+        :param file_path_output_noisy_images: str
+            Complete file path of noisy output images
+
+        :param file_type: str
+            Specific image file type
+        """
+        self.file_path_input_clean_images: str = file_path_input_clean_images
+        self.file_path_output_noisy_images: str = file_path_output_noisy_images
+        self.file_type: str = '' if file_type is None else file_type
+        self.labels: List[float] = []
+        self.label_encoding: List[int] = []
+        self.image_file_names: List[str] = glob(os.path.join(self.file_path_input_clean_images, '*', self.file_type))
+
+    def blur(self, blur_type: str = 'average', kernel_size: tuple = (3, 3)):
+        """
+        Generate blurred noise images
+
+        :param blur_type: str
+            Blur type name
+                -> average: Average
+                -> median: Median
+
+        :param kernel_size: tuple
+            Kernel size
+        """
+        _blur_type: str = blur_type if blur_type in ['average', 'median'] else 'average'
+        for image in self.image_file_names:
+            _file_name: str = image.split('/')[-1]
+            _file_type: str = _file_name.split('.')[-1]
+            _image = cv2.imread(filename=image)
+            for (k_x, k_y) in kernel_size:
+                if _blur_type == 'average':
+                    _blurred = cv2.blur(image, (k_x, k_y))
+                elif _blur_type == 'median':
+                    _blurred = cv2.medianBlur(image, k_x)
+                else:
+                    _blurred = None
+                cv2.imwrite(filename=os.path.join(self.file_path_output_noisy_images,
+                                                  _file_name.split('.')[0],
+                                                  '_blur',
+                                                  _file_type
+                                                  ),
+                            img=_blurred
+                            )
+
+    def fade(self, brightness: int = 20, contrast: int = 20):
+        """
+        Generate faded noise images
+
+        :param brightness: int
+            Desired brightness change
+
+        :param contrast: int
+            Desired contrast change
+        """
+        _brithness: float = brightness if brightness > 0 else 20
+        _contrast: float = contrast if contrast > 0 else 20
+        for image in self.image_file_names:
+            _file_name: str = image.split('/')[-1]
+            _file_type: str = _file_name.split('.')[-1]
+            _image = cv2.imread(filename=image)
+            # compute slope and intercept
+            _contrast_diff: float = (100 - _contrast)
+            if _contrast_diff <= 0.1:
+                _contrast = 99.9
+            _arg: float = math.pi * (((_contrast * _contrast) / 20000) + (3 * _contrast / 200)) / 4
+            _slope: float = 1 + (math.sin(_arg) / math.cos(_arg))
+            if _slope < 0:
+                _slope = 0
+            _pivot: float = (100 - _brithness) / 200
+            _intercept_brigthness: float = _brithness / 100
+            _interecept_contrast: float = _pivot * (1 - _slope)
+            _intercept: float = _intercept_brigthness + _interecept_contrast
+            _image = _image / 255.0
+            _out: np.array = _slope * _image + _intercept
+            _out[_out > 1] = 1
+            _out[_out < 0] = 0
+            cv2.imwrite(filename=os.path.join(self.file_path_output_noisy_images,
+                                              _file_name.split('.')[0],
+                                              '_fade',
+                                              _file_type
+                                              ),
+                        img=_image
+                        )
+
+    def salt_pepper(self, number_of_pixel_edges: tuple = (300, 1000)):
+        """
+        Generate salt & pepper noise images
+
+        :param number_of_pixel_edges: tuple
+            Edges to draw number of pixels to coloring into white and black
+        """
+        for image in self.image_file_names:
+            _file_name: str = image.split('/')[-1]
+            _file_type: str = _file_name.split('.')[-1]
+            _image = cv2.imread(filename=image)
+            _height, _width = _image.shape
+            _number_of_pixels: int = random.randint(number_of_pixel_edges[0], number_of_pixel_edges[1])
+            # White pixels:
+            for i in range(0, _number_of_pixels, 1):
+                _y_coord = random.randint(0, _height - 1)
+                _x_coord = random.randint(0, _width - 1)
+                _image[_y_coord][_x_coord] = 255
+            # Black pixels:
+            for i in range(0, _number_of_pixels, 1):
+                _y_coord = random.randint(0, _height - 1)
+                _x_coord = random.randint(0, _width - 1)
+                _image[_y_coord][_x_coord] = 0
+            cv2.imwrite(filename=os.path.join(self.file_path_output_noisy_images,
+                                              _file_name.split('.')[0],
+                                              '_salt_pepper',
+                                              _file_type
+                                              ),
+                        img=_image
+                        )
+
+    def save_labels(self, label_encoding: bool = True):
+        """
+        Generate noise type labels
+
+        :param label_encoding: bool
+            Whether to encode labels into number or not
+        """
+        if label_encoding:
+            _labels: list = self.label_encoding
+        else:
+            _labels: list = self.labels
+        _label_encoding: dict = dict(label=_labels)
+        with open(self.file_path_output_noisy_images, 'w') as _file:
+            json.dump(obj=_label_encoding, fp=_file, ensure_ascii=False)
+
+    def watermark(self, watermark_files: List[str]):
+        """
+        Generate watermarked noise images
+
+        :param watermark_files: List[str]
+            Complete file path of the files containing watermarks
+        """
+        for image in self.image_file_names:
+            _file_name: str = image.split('/')[-1]
+            _file_type: str = _file_name.split('.')[-1]
+            _image = cv2.imread(filename=image)
+            _height_image, _width_image, _ = _image.shape
+            _center_y: int = int(_height_image / 2)
+            _center_x: int = int(_width_image / 2)
+            for watermark in watermark_files:
+                _file_name_watermark: str = watermark.split('/')[-1]
+                _file_type_watermark: str = _file_name_watermark.split('.')[-1]
+                _watermark = cv2.imread(filename=watermark)
+                _height_watermark, _width_watermark, _ = _watermark.shape
+                _top_y: int = _center_y - int(_height_watermark / 2)
+                _left_x: int = _center_x - int(_width_watermark / 2)
+                _bottom_y: int = _top_y + _height_watermark
+                _right_x: int = _left_x + _width_watermark
+                _destination = _image[_top_y:_bottom_y, _left_x:_right_x]
+                _result = cv2.addWeighted(_destination, 1, _watermark, 0.5, 0)
+                _image[_top_y:_bottom_y, _left_x:_right_x] = _result
+                cv2.imwrite(filename=os.path.join(self.file_path_output_noisy_images,
+                                                  _file_name.split('.')[0],
+                                                  '_watermark_',
+                                                  _file_name_watermark.split('.')[0],
+                                                  _file_type
+                                                  ),
+                            img=_image
+                            )
 
 
 class ConstantPadding2D(Layer):

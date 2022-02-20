@@ -3,16 +3,167 @@ Utility functions
 """
 
 from glob import glob
+from keras.layers.convolutional import Conv2D, MaxPooling2D
+from keras.layers import Activation, Dense, Dropout, Flatten
+from keras.models import Model, Sequential
+from keras.preprocessing.image import ImageDataGenerator
+from skimage.transform import resize
 from tensorflow import pad
 from tensorflow.keras.layers import Layer
 from typing import List, Tuple
 
 import cv2
 import json
-import math
 import numpy as np
+import matplotlib.pyplot as plt
 import os
 import random
+import tensorflow as tf
+
+
+def train_noise_type_classifier(file_path_train_images: str,
+                                file_path_validation_images: str,
+                                file_path_model_output: str,
+                                learning_rate: float = 0.001,
+                                n_epoch: int = 10,
+                                batch_size: int = 32,
+                                image_width: int = 256,
+                                image_height: int = 256,
+                                n_channels: int = 3,
+                                n_noise_types: int = 4
+                                ):
+    """
+    Train model for classifying noise types (required in mixture of experts generator)
+
+    :param file_path_train_images: str
+        Complete file path for the training noise type images
+
+    :param file_path_validation_images: str
+        Complete file path for the validation noise type images
+
+    :param file_path_model_output: str
+        Complete file path for the trained model to save
+
+    :param learning_rate: float
+        Learning rate
+
+    :param n_epoch: int
+            Number of epochs to train
+
+    :param batch_size: int
+            Batch size
+
+    :param image_height: int
+        Height of the image
+
+    :param image_width: int
+        Width of the image
+
+    :param n_channels: int
+            Number of image channels
+                -> 1: gray
+                -> 3: color (rbg)
+
+    :param n_noise_types: int
+        Number of noise type classes
+    """
+    if len(file_path_train_images) == 0:
+        raise FileNotFoundError('No training images found')
+    if len(file_path_validation_images) == 0:
+        raise FileNotFoundError('No validation images found')
+    if len(file_path_model_output) == 0:
+        raise FileNotFoundError('No path for the trained model output found')
+    _learning_rate: float = learning_rate if learning_rate > 0 else 0.001
+    _n_epoch: int = n_epoch if n_epoch > 0 else 10
+    _batch_size: int = batch_size if batch_size > 0 else 32
+    _image_width: int = image_width if image_width > 10 else 256
+    _image_height: int = image_height if image_height > 10 else 256
+    if 1 < n_channels < 4:
+        _n_channels: int = 3
+    else:
+        _n_channels: int = 1
+    _image_shape: tuple = (_image_width, _image_height, _n_channels)
+    if n_noise_types < 2:
+        raise ValueError(f'Not enough noise type classes ({n_noise_types})')
+    # Build neural network model:
+    _model: Sequential = Sequential()
+    # 1. Convolutional Layer:
+    _model.add(Conv2D(32, (2, 2), input_shape=_image_shape))
+    _model.add(Activation('relu'))
+    _model.add(MaxPooling2D(pool_size=(2, 2)))
+    # 2. Convolutional Layer:
+    _model.add(Conv2D(32, (2, 2)))
+    _model.add(Activation('relu'))
+    _model.add(MaxPooling2D(pool_size=(2, 2)))
+    # 3. Convolutional Layer:
+    _model.add(Conv2D(32, (2, 2)))
+    _model.add(Activation('relu'))
+    _model.add(MaxPooling2D(pool_size=(2, 2)))
+    # 4. Convolutional Layer:
+    _model.add(Conv2D(64, (2, 2)))
+    _model.add(Activation('relu'))
+    _model.add(MaxPooling2D(pool_size=(2, 2)))
+    # 5. Convolutional Layer:
+    _model.add(Conv2D(64, (2, 2)))
+    _model.add(Activation('relu'))
+    _model.add(MaxPooling2D(pool_size=(2, 2)))
+    # 6. Convolutional Layer:
+    _model.add(Conv2D(64, (2, 2)))
+    _model.add(Activation('relu'))
+    _model.add(MaxPooling2D(pool_size=(2, 2)))
+    # 7. Convolutional Layer:
+    _model.add(Conv2D(64, (2, 2)))
+    _model.add(Activation('relu'))
+    _model.add(MaxPooling2D(pool_size=(2, 2)))
+    # MLP Layer:
+    _model.add(Flatten())
+    _model.add(Dense(64))
+    _model.add(Activation('relu'))
+    _model.add(Dropout(0.5))
+    _model.add(Dense(n_noise_types))
+    _model.add(Activation('softmax'))
+    # Compile model:
+    _model.compile(loss='categorical_crossentropy',
+                   optimizer=Adam(learning_rate=_learning_rate,
+                                  beta_1=0.9,
+                                  beta_2=0.999,
+                                  epsilon=1e-7,
+                                  amsgrad=False
+                                  ),
+                   metrics=[tf.keras.metrics.Accuracy(),
+                            tf.keras.metrics.Recall(),
+                            tf.keras.metrics.TruePositives(),
+                            tf.keras.metrics.FalsePositives(),
+                            tf.keras.metrics.TrueNegatives(),
+                            tf.keras.metrics.FalseNegatives()
+                            ]
+                   )
+    # Load and preprocess image data (train & validation):
+    _train_data_generator: ImageDataGenerator = ImageDataGenerator(rescale=1. / 255,
+                                                                   shear_range=0.0,
+                                                                   zoom_range=0.0,
+                                                                   horizontal_flip=True
+                                                                   )
+    _validation_data_generator: ImageDataGenerator = ImageDataGenerator(rescale=1. / 255)
+    _train_generator = _train_data_generator.flow_from_directory(directory=file_path_train_images,
+                                                                 target_size=(_image_width, _image_height),
+                                                                 batch_size=_batch_size,
+                                                                 class_mode='categorical'
+                                                                 )
+    _validation_generator = _validation_data_generator.flow_from_directory(directory=file_path_validation_images,
+                                                                           target_size=(_image_width, _image_height),
+                                                                           batch_size=_batch_size,
+                                                                           class_mode='categorical'
+                                                                           )
+    # Train neural network model:
+    _model.fit(x=_train_generator,
+               #steps_per_epoch=300 // batch_size,
+               epochs=_n_epoch,
+               validation_data=_validation_generator,
+               #validation_steps=75 // _batch_size
+               )
+    # Save trained neural network model:
+    _model.save_weights(filepath=os.path.join(file_path_model_output, 'noise_type_clf.h5'))
 
 
 class ImageProcessor:
@@ -22,9 +173,11 @@ class ImageProcessor:
     def __init__(self,
                  file_path_clean_images: str,
                  file_path_noisy_images: str,
+                 file_path_multi_noisy_images: List[str] = None,
                  n_channels: int = 1,
                  batch_size: int = 1,
                  image_resolution: tuple = None,
+                 normalize: bool = False,
                  flip: bool = True,
                  crop: Tuple[Tuple[int, int], Tuple[int, int]] = None,
                  file_type: str = None
@@ -35,6 +188,9 @@ class ImageProcessor:
 
         :param file_path_noisy_images: str
             Complete file path of the noisy images
+
+        :param file_path_multi_noisy_images: List[str]
+            Complete file paths of several noisy images
 
         :param n_channels: int
             Number of channels of the image
@@ -47,6 +203,9 @@ class ImageProcessor:
         :param image_resolution: tuple
             Force resizing image into given resolution
 
+        :param normalize: bool
+            Whether to normalize image (rescale to 0 - 1) or not
+
         :param flip: bool
             Whether to flip image based on probability distribution or not
 
@@ -58,11 +217,13 @@ class ImageProcessor:
         """
         self.file_path_clean_images: str = file_path_clean_images
         self.file_path_noisy_images: str = file_path_noisy_images
+        self.file_path_multi_noisy_images: List[str] = file_path_multi_noisy_images
         self.file_type: str = '' if file_type is None else file_type
         self.n_channels: int = cv2.IMREAD_COLOR if n_channels > 1 else cv2.IMREAD_GRAYSCALE
         self.batch_size: int = batch_size
         self.n_batches: int = 0
         self.image_resolution: tuple = image_resolution
+        self.normalize: bool = normalize
         self.flip: bool = flip
         self.crop: Tuple[Tuple[int, int], Tuple[int, int]] = crop
 
@@ -71,7 +232,7 @@ class ImageProcessor:
         """
         Normalize images
         """
-        return images / 127.5 - 1.0
+        return (images / 127.5) - 1.0
 
     def _read_image(self, file_path: str) -> np.array:
         """
@@ -85,9 +246,10 @@ class ImageProcessor:
         """
         _image: cv2 = cv2.imread(filename=file_path, flags=self.n_channels)
         if self.crop is not None:
-            _iamge = _image[self.crop[0][0]:self.crop[0][1], self.crop[1][0]:self.crop[1][1]]
+            _image = _image[self.crop[0][0]:self.crop[0][1], self.crop[1][0]:self.crop[1][1]]
         if self.image_resolution is not None:
-            _image = cv2.resize(src=_image, dsize=self.image_resolution, dst=None, fx=None, fy=None, interpolation=None)
+            #_image = cv2.resize(src=_image, dsize=self.image_resolution, dst=None, fx=None, fy=None, interpolation=None)
+            _image = resize(image=_image, output_shape=self.image_resolution)
         if self.flip:
             if np.random.random() > 0.5:
                 if np.random.random() > 0.5:
@@ -97,17 +259,20 @@ class ImageProcessor:
                 _image = cv2.flip(src=_image, flipCode=_direction, dst=None)
         return _image
 
-    def load_batch(self) -> Tuple[np.array, np.array]:
+    def load_batch(self) -> Tuple[np.array, np.array, List[int]]:
         """
         Load batch images for each group (clean & noisy) separately
 
-        :return Tuple[np.array, np.array]
-            Arrays of clean & noisy images
+        :return Tuple[np.array, np.array, List[str]]
+            Arrays of clean & noisy images as well as noise labels
         """
+        if self.file_path_multi_noisy_images is None:
+            _label: int = 0
+            _file_paths_noisy: List[str] = glob(os.path.join('.', self.file_path_noisy_images, f'*{self.file_type}'))
+        else:
+            _label: int = random.randint(a=0, b=len(self.file_path_multi_noisy_images) - 1)
+            _file_paths_noisy: List[str] = glob(os.path.join('.', self.file_path_multi_noisy_images[_label], f'*{self.file_type}'))
         _file_paths_clean: List[str] = glob(os.path.join('.', self.file_path_clean_images, f'*{self.file_type}'))
-        _file_paths_noisy: List[str] = glob(os.path.join('.', self.file_path_noisy_images, f'*{self.file_type}'))
-        #_file_paths_clean: List[str] = glob(f'./{self.file_path_clean_images}/*')
-        #_file_paths_noisy: List[str] = glob(f'./{self.file_path_noisy_images}/*')
         self.n_batches = int(min(len(_file_paths_clean), len(_file_paths_noisy)) / self.batch_size)
         _total_samples: int = self.n_batches * self.batch_size
         _file_paths_clean_sample: List[str] = np.random.choice(_file_paths_clean, _total_samples, replace=False)
@@ -119,20 +284,42 @@ class ImageProcessor:
             for path_image_clean, path_image_noisy in zip(_batch_clean, _batch_noisy):
                 _images_clean.append(self._read_image(file_path=path_image_clean))
                 _images_noisy.append(self._read_image(file_path=path_image_noisy))
-            yield self._normalize(np.array(_images_clean)), self._normalize(np.array(_images_noisy))
+            if self.normalize:
+                yield self._normalize(np.array(_images_clean)), self._normalize(np.array(_images_noisy)), _label
+            else:
+                yield np.array(_images_clean), np.array(_images_noisy), _label
 
-    def load_images(self) -> Tuple[List[str], np.array]:
+    def load_images(self, n_images: int = None) -> Tuple[str, np.array]:
         """
         Load images without batching
 
         :return Tuple[List[str], np.array]
             List of image file names & array of loaded images
         """
-        _file_paths_noisy: List[str] = glob(f'./{self.file_path_noisy_images}/*')
-        _images_noisy: List[str] = []
-        for path_image_noisy in _file_paths_noisy:
-            _images_noisy.append(self._read_image(file_path=path_image_noisy))
-        yield _file_paths_noisy, self._normalize(np.array(_images_noisy))
+        _images_path, _images_noisy = [], []
+        _file_paths_noisy: List[str] = glob(f'{self.file_path_noisy_images}/*')
+        if n_images is not None and n_images > 0:
+            _file_paths_noisy_sample: List[str] = np.random.choice(_file_paths_noisy, n_images, replace=False)
+            for path_image_noisy in _file_paths_noisy_sample:
+                _images_path.append(path_image_noisy)
+                _images_noisy.append(self._read_image(file_path=path_image_noisy))
+            if self.normalize:
+                yield _images_path, self._normalize(np.array(_images_noisy))
+            else:
+                yield _images_path, np.array(_images_noisy)
+        else:
+            self.n_batches = int(len(_file_paths_noisy))
+            _total_samples: int = self.n_batches * self.batch_size
+            _file_paths_noisy_sample: List[str] = np.random.choice(_file_paths_noisy, _total_samples, replace=False)
+            for i in range(0, self.n_batches - 1, 1):
+                _batch_noisy: List[str] = _file_paths_noisy_sample[i * self.batch_size:(i + 1) * self.batch_size]
+                for path_image_noisy in _batch_noisy:
+                    _images_path.append(path_image_noisy)
+                    _images_noisy.append(self._read_image(file_path=path_image_noisy))
+                if self.normalize:
+                    yield _images_path, self._normalize(np.array(_images_noisy))
+                else:
+                    yield _images_path, np.array(_images_noisy)
 
     @staticmethod
     def save_image(image: np.array, output_file_path: str):
@@ -145,7 +332,11 @@ class ImageProcessor:
         :param output_file_path: str
             Complete file path of the output image
         """
-        cv2.imwrite(filename=output_file_path, img=image, params=None)
+        fig = plt.figure()
+        plt.imshow(image, cmap='Greys_r')
+        fig.savefig(output_file_path)
+        plt.close()
+        #cv2.imwrite(filename=output_file_path, img=image, params=None)
 
 
 class NoiseGenerator:
@@ -155,7 +346,8 @@ class NoiseGenerator:
     def __init__(self,
                  file_path_input_clean_images: str,
                  file_path_output_noisy_images: str,
-                 file_type: str = None
+                 file_type: str = None,
+                 image_resolution: tuple = None
                  ):
         """
         :param file_path_input_clean_images: str
@@ -166,10 +358,14 @@ class NoiseGenerator:
 
         :param file_type: str
             Specific image file type
+
+        :param image_resolution: tuple
+            Resizing image into given resolution
         """
         self.file_path_input_clean_images: str = file_path_input_clean_images
         self.file_path_output_noisy_images: str = file_path_output_noisy_images
         self.file_type: str = '' if file_type is None else file_type
+        self.image_resolution: tuple = image_resolution
         self.labeling: dict = dict(file_name=[], label=[], label_encoding=[])
         self.image_file_names: List[str] = glob(os.path.join(self.file_path_input_clean_images, f'*{self.file_type}'))
 
@@ -201,6 +397,8 @@ class NoiseGenerator:
                 self.labeling['file_name'].append(_output_file_path)
                 self.labeling['label'].append('blur')
                 self.labeling['label_encoding'].append('1')
+            if self.image_resolution is not None:
+                _image = cv2.resize(src=_image, dsize=self.image_resolution, dst=None, fx=None, fy=None, interpolation=None)
             cv2.imwrite(filename=_output_file_path, img=_image)
 
     def fade(self, brightness: int = 20):
@@ -229,6 +427,8 @@ class NoiseGenerator:
                 self.labeling['file_name'].append(_output_file_path)
                 self.labeling['label'].append('fade')
                 self.labeling['label_encoding'].append('2')
+            if self.image_resolution is not None:
+                _image = cv2.resize(src=_image, dsize=self.image_resolution, dst=None, fx=None, fy=None, interpolation=None)
             cv2.imwrite(filename=_output_file_path, img=_image)
 
     def salt_pepper(self, number_of_pixel_edges: tuple = (100000, 500000)):
@@ -261,24 +461,16 @@ class NoiseGenerator:
                 self.labeling['file_name'].append(_output_file_path)
                 self.labeling['label'].append('salt_pepper')
                 self.labeling['label_encoding'].append('3')
+            if self.image_resolution is not None:
+                _image = cv2.resize(src=_image, dsize=self.image_resolution, dst=None, fx=None, fy=None, interpolation=None)
             cv2.imwrite(filename=_output_file_path, img=_image)
 
-    def save_labels(self, include_image_data):
+    def save_labels(self):
         """
         Save noise type labeling
-
-        :param include_image_data: bool
-            Whether to include image data or not
         """
-        if include_image_data:
-            self.labeling['image'] = []
-            for image in self.labeling.get('file_name'):
-                _image = cv2.imread(filename=image)
-                self.labeling['image'].append(_image)
-        with open(self.file_path_output_noisy_images, 'w') as _file:
+        with open(os.path.join(self.file_path_output_noisy_images, 'noisy_document_images.json'), 'w') as _file:
             json.dump(obj=self.labeling, fp=_file, ensure_ascii=False)
-        if include_image_data:
-            del self.labeling['image']
 
     def watermark(self, watermark_files: List[str]):
         """
@@ -313,7 +505,154 @@ class NoiseGenerator:
                     self.labeling['file_name'].append(_output_file_path)
                     self.labeling['label'].append('watermark')
                     self.labeling['label_encoding'].append('4')
+                if self.image_resolution is not None:
+                    _image = cv2.resize(src=_image, dsize=self.image_resolution, dst=None, fx=None, fy=None, interpolation=None)
                 cv2.imwrite(filename=_output_file_path, img=_image)
+
+
+class NoiseTypeClassifierException(Exception):
+    """
+    Class for handling exceptions for class NoiseTypeClassifier
+    """
+    pass
+
+
+class NoiseTypeClassifier(Model):
+    """
+    Class for training noise type classifier
+    """
+    def __init__(self,
+                 file_path_train_images: str,
+                 file_path_validation_images: str,
+                 file_path_model_output: str,
+                 learning_rate: float = 0.001,
+                 n_epoch: int = 10,
+                 batch_size: int = 32,
+                 image_width: int = 256,
+                 image_height: int = 256,
+                 n_channels: int = 3,
+                 n_noise_types: int = 4
+                 ):
+        """
+        Train model for classifying noise types (required in mixture of experts generator)
+
+        :param file_path_train_images: str
+            Complete file path for the training noise type images
+
+        :param file_path_validation_images: str
+            Complete file path for the validation noise type images
+
+        :param file_path_model_output: str
+            Complete file path for the trained model to save
+
+        :param learning_rate: float
+            Learning rate
+
+        :param n_epoch: int
+            Number of epochs to train
+
+        :param batch_size: int
+            Batch size
+
+        :param image_height: int
+            Height of the image
+
+        :param image_width: int
+            Width of the image
+
+        :param n_channels: int
+            Number of image channels
+                -> 1: gray
+                -> 3: color (rbg)
+
+        :param n_noise_types: int
+            Number of noise type classes
+        """
+        super(NoiseTypeClassifier, self).__init__()
+        if len(file_path_train_images) == 0:
+            raise NoiseTypeClassifierException('No training images found')
+        if len(file_path_validation_images) == 0:
+            raise NoiseTypeClassifierException('No validation images found')
+        if len(file_path_model_output) == 0:
+            raise NoiseTypeClassifierException('No path for the trained model output found')
+        self.file_path_train_images: str = file_path_train_images
+        self.file_path_validation_images: str = file_path_validation_images
+        self.file_path_model_output: str = file_path_model_output
+        self.learning_rate: float = learning_rate if learning_rate > 0 else 0.001
+        self.n_epoch: int = n_epoch if n_epoch > 0 else 10
+        self.batch_size: int = batch_size if batch_size > 0 else 32
+        self.image_height: int = image_height if image_height > 10 else 256
+        self.image_width: int = image_width if image_width > 10 else 256
+        if 1 < n_channels < 4:
+            self.n_channels: int = 3
+        else:
+            self.n_channels: int = 1
+        self.image_shape: tuple = (self.image_width, self.image_height, self.n_channels)
+        if n_noise_types < 2:
+            raise NoiseTypeClassifierException(f'Not enough noise type classes ({n_noise_types})')
+        self.n_noise_types: int = n_noise_types
+        # Build neural network model:
+        self.model: Sequential = Sequential()
+        # 1. Convolutional Layer:
+        self.model.add(Conv2D(32, (2, 2), input_shape=self.image_shape))
+        self.model.add(Activation('relu'))
+        self.model.add(MaxPooling2D(pool_size=(2, 2)))
+        # 2. Convolutional Layer:
+        self.model.add(Conv2D(32, (2, 2)))
+        self.model.add(Activation('relu'))
+        self.model.add(MaxPooling2D(pool_size=(2, 2)))
+        # 3. Convolutional Layer:
+        self.model.add(Conv2D(32, (2, 2)))
+        self.model.add(Activation('relu'))
+        self.model.add(MaxPooling2D(pool_size=(2, 2)))
+        # 4. Convolutional Layer:
+        self.model.add(Conv2D(64, (2, 2)))
+        self.model.add(Activation('relu'))
+        self.model.add(MaxPooling2D(pool_size=(2, 2)))
+        # 5. Convolutional Layer:
+        self.model.add(Conv2D(64, (2, 2)))
+        self.model.add(Activation('relu'))
+        self.model.add(MaxPooling2D(pool_size=(2, 2)))
+        # 6. Convolutional Layer:
+        self.model.add(Conv2D(64, (2, 2)))
+        self.model.add(Activation('relu'))
+        self.model.add(MaxPooling2D(pool_size=(2, 2)))
+        # 7. Convolutional Layer:
+        self.model.add(Conv2D(64, (2, 2)))
+        self.model.add(Activation('relu'))
+        self.model.add(MaxPooling2D(pool_size=(2, 2)))
+        # MLP Layer:
+        self.model.add(Flatten())
+        self.model.add(Dense(64))
+        self.model.add(Activation('relu'))
+        self.model.add(Dropout(0.5))
+        self.model.add(Dense(self.n_noise_types))
+        if self.n_noise_types == 2:
+            self.model.add(Activation('sigmoid'))
+        else:
+            self.model.add(Activation('softmax'))
+
+    def call(self, x):
+        return self.model(x)
+
+    def train_step(self, data):
+        x, y = data
+
+        with tf.GradientTape() as tape:
+            y_pred = self(x)  # Forward pass
+            # Compute the loss value
+            # (the loss function is configured in `compile()`)
+            loss = self.compiled_loss(y, y_pred, regularization_losses=self.losses)
+
+        # Compute gradients
+        trainable_vars = self.trainable_variables
+        gradients = tape.gradient(loss, trainable_vars)
+        # Update weights
+        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+        # Update metrics (includes the metric that tracks the loss)
+        self.compiled_metrics.update_state(y, y_pred)
+        # Return a dict mapping metric names to current value
+        return {m.name: m.result() for m in self.metrics}
 
 
 class ConstantPadding2D(Layer):

@@ -10,6 +10,7 @@ from keras.preprocessing.image import ImageDataGenerator
 from skimage.transform import resize
 from tensorflow import pad
 from tensorflow.keras.layers import Layer
+from tensorflow.keras.optimizers import Adam
 from typing import List, Tuple
 
 import cv2
@@ -337,6 +338,145 @@ class ImageProcessor:
         fig.savefig(output_file_path)
         plt.close()
         #cv2.imwrite(filename=output_file_path, img=image, params=None)
+
+
+class ImageSkew:
+    """
+    Class for handling skew in document images
+    """
+    def __init__(self,
+                 file_path_input_images: str,
+                 file_path_output_images: str = None,
+                 denoise_by_blurring: bool = False
+                 ):
+        """
+        :param file_path_input_images: str
+            Complete file path of the input images
+
+        :param file_path_output_images: str
+            Complete file path of the output images
+
+        :param denoise_by_blurring: bool
+            Whether to denoise image by burring or not
+        """
+        self.denoise_by_blurring: bool = denoise_by_blurring
+        if len(file_path_input_images) == 0:
+            raise ValueError('Input file path is empty')
+        self.file_path_input_images: str = file_path_input_images
+        if self.file_path_input_images is None or len(file_path_output_images) == 0:
+            self.file_path_output_images: str = file_path_input_images
+        else:
+            self.file_path_output_images: str = file_path_output_images
+        self.image_processor: ImageProcessor = ImageProcessor(file_path_clean_images='',
+                                                              file_path_noisy_images=self.file_path_input_images,
+                                                              n_channels=1,
+                                                              batch_size=1,
+                                                              image_resolution=None,
+                                                              normalize=False,
+                                                              flip=False,
+                                                              crop=None,
+                                                              file_type=None
+                                                              )
+
+    @staticmethod
+    def _rotate_image(image: np.array, angle: float) -> np.array:
+        """
+        Rotate image
+
+        :param image: np.array
+            Image
+
+        :param angle: float
+            Angle for rotation
+
+        :return np.array
+            Rotated images
+        """
+        _rotated_image: np.array = image
+        (_height, _width) = _rotated_image.shape[:2]
+        _center: tuple = (_width // 2, _height // 2)
+        _rotation_matrix = cv2.getRotationMatrix2D(center=_center, angle=angle, scale=1.0)
+        return cv2.warpAffine(src=_rotated_image,
+                              M=_rotation_matrix,
+                              dsize=(_width, _height),
+                              flags=cv2.INTER_CUBIC,
+                              borderMode=cv2.BORDER_REPLICATE
+                              )
+
+    def deskew(self):
+        """
+        Deskew text in document image
+        """
+        for image_file_path, image in self.image_processor.load_images(n_images=1):
+            _angle: float = self.get_angle(image=image)
+            _image: np.array = self._rotate_image(image=image, angle=-1.0 * _angle)
+            _file_name: str = image_file_path.split('/')[-1]
+            _file_type: str = _file_name.split('.')[-1]
+            _file_name = f'{_file_name.split(".")[0]}_deskewed.{_file_type}'
+            _file_path: str = os.path.join(self.file_path_output_images, _file_name)
+            self.image_processor.save_image(image=_image, output_file_path=_file_path)
+
+    def get_angle(self, image: np.array) -> float:
+        """
+        Get angle of text in document image
+
+        :param image: np.array
+            Image
+
+        :return float
+            Angle of the text in document image
+        """
+        if self.denoise_by_blurring:
+            _image: np.array = cv2.GaussianBlur(src=image, ksize=(9, 9), sigmaX=0, dst=None, sigmaY=None, borderType=None)
+        else:
+            _image: np.array = image
+        _image = cv2.threshold(src=_image,
+                               thresh=0,
+                               maxval=255,
+                               type=cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU,
+                               dst=None
+                               )[1]
+
+        # Apply dilate to merge text into meaningful lines/paragraphs.
+        # Use larger kernel on X axis to merge characters into single line, cancelling out any spaces.
+        # But use smaller kernel on Y axis to separate between different blocks of text
+        _kernel = cv2.getStructuringElement(shape=cv2.MORPH_RECT, ksize=(30, 5), anchor=None)
+        _image = cv2.dilate(src=_image, kernel=_kernel, iterations=5, borderType=None, borderValue=None)
+
+        # Find all contours
+        _contours, _hierarchy = cv2.findContours(image=_image,
+                                                 mode=cv2.RETR_LIST,
+                                                 method=cv2.CHAIN_APPROX_SIMPLE,
+                                                 contours=None,
+                                                 hierarchy=None,
+                                                 offset=None
+                                                 )
+        _contours = sorted(_contours, key=cv2.contourArea, reverse=True)
+
+        # Find largest contour and surround in min area box
+        _largest_contour: float = _contours[0]
+        _min_area_rectangle: tuple = cv2.minAreaRect(points=_largest_contour)
+
+        # Determine the angle. Convert it to the value that was originally used to obtain skewed image
+        _angle: float = _min_area_rectangle[-1]
+        if _angle < -45:
+            _angle = 90 + _angle
+        return -1.0 * _angle
+
+    def skew(self, angle: float):
+        """
+        Skew image
+
+        :param angle: float
+            Angle of the text in document image
+        """
+        for image_file_path, image in self.image_processor.load_images(n_images=1):
+            _image: np.array = self._rotate_image(image=image, angle=angle)
+            _file_name: str = image_file_path.split('/')[-1]
+            _file_type: str = _file_name.split('.')[-1]
+            _file_name = f'{_file_name.split(".")[0]}_skewed.{_file_type}'
+            _file_path: str = os.path.join(self.file_path_output_images, _file_name)
+            self.image_processor.save_image(image=_image, output_file_path=_file_path)
 
 
 class NoiseGenerator:

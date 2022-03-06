@@ -3,23 +3,47 @@ Utility functions
 """
 
 from glob import glob
+from keras_contrib.layers.normalization.instancenormalization import InstanceNormalization
+from keras.engine import keras_tensor
+from keras.initializers.initializers_v2 import (
+    Constant, HeNormal, HeUniform, GlorotNormal, GlorotUniform, LecunNormal, LecunUniform, Ones, Orthogonal, RandomNormal, RandomUniform, TruncatedNormal, Zeros
+)
+from keras.layers import BatchNormalization, Dropout, Input, ReLU
 from keras.layers.convolutional import Conv2D, MaxPooling2D
-from keras.layers import Activation, Dense, Dropout, Flatten
+from keras.layers import Activation, Dense, Dropout, Flatten, Input
 from keras.models import Model, Sequential
-from keras.preprocessing.image import ImageDataGenerator
+from keras.preprocessing.image import DirectoryIterator, ImageDataGenerator
 from skimage.transform import resize
 from tensorflow import pad
+from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.layers import Layer
-from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.optimizers import Adam, RMSprop, SGD
 from typing import List, Tuple
 
 import cv2
 import json
+import keras
 import numpy as np
 import matplotlib.pyplot as plt
 import os
 import random
 import tensorflow as tf
+
+
+def peek_signal_to_noise_ratio(first_image: np.array, second_image: np.array) -> float:
+    """
+    Calculate peek signal-to-noise ratio (psnr)
+
+    :param first_image: np.array
+        First image
+
+    :param second_image: np.array
+        Second image
+
+    :return float
+        Peek signal-to-noise ratio
+    """
+    return cv2.PSNR(src1=first_image, src2=second_image, R=None)
 
 
 def train_noise_type_classifier(file_path_train_images: str,
@@ -229,11 +253,24 @@ class ImageProcessor:
         self.crop: Tuple[Tuple[int, int], Tuple[int, int]] = crop
 
     @staticmethod
+    def _de_normalize(images: np.array) -> np.array:
+        """
+        De-normalize images
+
+        :param images: np.array
+            Images
+        """
+        return images / (1 / 255)
+
+    @staticmethod
     def _normalize(images: np.array) -> np.array:
         """
         Normalize images
+
+        :param images: np.array
+            Images
         """
-        return (images / 127.5) - 1.0
+        return images * (1 / 255)
 
     def _read_image(self, file_path: str) -> np.array:
         """
@@ -245,11 +282,10 @@ class ImageProcessor:
         :return np.array
             Image
         """
-        _image: cv2 = cv2.imread(filename=file_path, flags=self.n_channels)
+        _image: np.array = cv2.imread(filename=file_path, flags=self.n_channels)
         if self.crop is not None:
             _image = _image[self.crop[0][0]:self.crop[0][1], self.crop[1][0]:self.crop[1][1]]
         if self.image_resolution is not None:
-            #_image = cv2.resize(src=_image, dsize=self.image_resolution, dst=None, fx=None, fy=None, interpolation=None)
             _image = resize(image=_image, output_shape=self.image_resolution)
         if self.flip:
             if np.random.random() > 0.5:
@@ -290,6 +326,28 @@ class ImageProcessor:
             else:
                 yield np.array(_images_clean), np.array(_images_noisy), _label
 
+    def load_all_images(self) -> Tuple[np.array, np.array]:
+        """
+        Load all images without batching
+        """
+        if self.file_path_multi_noisy_images is None:
+            _label: int = 0
+            _file_paths_noisy: List[str] = glob(os.path.join('.', self.file_path_noisy_images, f'*{self.file_type}'))
+        else:
+            _label: int = random.randint(a=0, b=len(self.file_path_multi_noisy_images) - 1)
+            _file_paths_noisy: List[str] = glob(os.path.join('.', self.file_path_multi_noisy_images[_label], f'*{self.file_type}'))
+        _file_paths_clean: List[str] = glob(os.path.join('.', self.file_path_clean_images, f'*{self.file_type}'))
+        sorted(_file_paths_clean, reverse=False)
+        sorted(_file_paths_noisy, reverse=False)
+        _images_clean, _images_noisy = [], []
+        for path_image_clean, path_image_noisy in zip(_file_paths_clean, _file_paths_noisy):
+            _images_clean.append(self._read_image(file_path=path_image_clean))
+            _images_noisy.append(self._read_image(file_path=path_image_noisy))
+        if self.normalize:
+            return self._normalize(np.array(_images_clean)), self._normalize(np.array(_images_noisy))
+        else:
+            return np.array(_images_clean), np.array(_images_noisy)
+
     def load_images(self, n_images: int = None) -> Tuple[str, np.array]:
         """
         Load images without batching
@@ -300,14 +358,15 @@ class ImageProcessor:
         _images_path, _images_noisy = [], []
         _file_paths_noisy: List[str] = glob(f'{self.file_path_noisy_images}/*')
         if n_images is not None and n_images > 0:
-            _file_paths_noisy_sample: List[str] = np.random.choice(_file_paths_noisy, n_images, replace=False)
-            for path_image_noisy in _file_paths_noisy_sample:
-                _images_path.append(path_image_noisy)
-                _images_noisy.append(self._read_image(file_path=path_image_noisy))
-            if self.normalize:
-                yield _images_path, self._normalize(np.array(_images_noisy))
-            else:
-                yield _images_path, np.array(_images_noisy)
+            for i in range(0, n_images, 1):
+                _file_paths_noisy_sample: List[str] = np.random.choice(_file_paths_noisy, 1, replace=False)
+                for path_image_noisy in _file_paths_noisy_sample:
+                    _images_path.append(path_image_noisy)
+                    _images_noisy.append(self._read_image(file_path=path_image_noisy))
+                if self.normalize:
+                    yield _images_path, self._normalize(np.array(_images_noisy))
+                else:
+                    yield _images_path, np.array(_images_noisy)
         else:
             self.n_batches = int(len(_file_paths_noisy))
             _total_samples: int = self.n_batches * self.batch_size
@@ -322,8 +381,7 @@ class ImageProcessor:
                 else:
                     yield _images_path, np.array(_images_noisy)
 
-    @staticmethod
-    def save_image(image: np.array, output_file_path: str):
+    def save_image(self, image: np.array, output_file_path: str):
         """
         Save image
 
@@ -333,11 +391,15 @@ class ImageProcessor:
         :param output_file_path: str
             Complete file path of the output image
         """
+        if self.normalize:
+            _image: np.array = self._de_normalize(images=image)
+        else:
+            _image: np.array = image
         fig = plt.figure()
-        plt.imshow(image, cmap='Greys_r')
+        plt.imshow(X=_image, cmap='Greys_r')
         fig.savefig(output_file_path)
         plt.close()
-        #cv2.imwrite(filename=output_file_path, img=image, params=None)
+        #cv2.imwrite(filename=output_file_path, img=_image, params=None)
 
 
 class ImageSkew:
@@ -657,42 +719,40 @@ class NoiseTypeClassifierException(Exception):
     pass
 
 
-class NoiseTypeClassifier(Model):
+class NoiseTypeClassifier:
     """
-    Class for training noise type classifier
+    Class for training noise type classifier network
     """
     def __init__(self,
                  file_path_train_images: str,
                  file_path_validation_images: str,
-                 file_path_model_output: str,
-                 learning_rate: float = 0.001,
-                 n_epoch: int = 10,
-                 batch_size: int = 32,
-                 image_width: int = 256,
+                 n_channels: int = 1,
                  image_height: int = 256,
-                 n_channels: int = 3,
-                 n_noise_types: int = 4
+                 image_width: int = 256,
+                 learning_rate: float = 0.001,
+                 optimizer: str = 'adam',
+                 initializer: str = 'he_normal',
+                 batch_size: int = 32,
+                 start_n_filters: int = 64,
+                 up_sample_n_filters_period: int = 3,
+                 n_conv_layers: int = 3,
+                 dropout_rate_conv: float = 0.0,
+                 fc_input_units: int = 64,
+                 dropout_rate_fc: float = 0.5,
+                 n_noise_types: int = 4,
+                 print_model_architecture: bool = True
                  ):
         """
-        Train model for classifying noise types (required in mixture of experts generator)
-
         :param file_path_train_images: str
-            Complete file path for the training noise type images
+            Complete file path of images used for training
 
         :param file_path_validation_images: str
-            Complete file path for the validation noise type images
+            Complete file path of images used for evaluation
 
-        :param file_path_model_output: str
-            Complete file path for the trained model to save
-
-        :param learning_rate: float
-            Learning rate
-
-        :param n_epoch: int
-            Number of epochs to train
-
-        :param batch_size: int
-            Batch size
+        :param n_channels: int
+            Number of image channels
+                -> 1: gray
+                -> 3: color (rbg)
 
         :param image_height: int
             Height of the image
@@ -700,26 +760,59 @@ class NoiseTypeClassifier(Model):
         :param image_width: int
             Width of the image
 
-        :param n_channels: int
-            Number of image channels
-                -> 1: gray
-                -> 3: color (rbg)
+        :param learning_rate: float
+            Learning rate
+
+        :param initializer: str
+            Name of the initializer used in convolutional layers
+                -> constant: Constant value 2
+                -> he_normal:
+                -> he_uniform:
+                -> glorot_normal: Xavier normal
+                -> glorot_uniform: Xavier uniform
+                -> lecun_normal: Lecun normal
+                -> lecun_uniform:
+                -> ones: Constant value 1
+                -> orthogonal:
+                -> random_normal:
+                -> random_uniform:
+                -> truncated_normal:
+                -> zeros: Constant value 0
+
+        :param batch_size: int
+            Batch size
+
+        :param start_n_filters: int
+            Number of filters used in first convolutional layer in auto-encoder network
+
+        :param up_sample_n_filters_period: int
+            Number of layers until up-sampling number of filters
+
+        :param n_conv_layers: int
+            Number of convolutional layer in auto-encoder network
+
+        :param dropout_rate_conv: float
+            Dropout rate used after each convolutional layer
+
+        :param fc_input_units: int
+            Number of units (neurons) of the fully connected input layer
+
+        :param dropout_rate_fc: float
+            Dropout rate used after the fully connected input layer
 
         :param n_noise_types: int
-            Number of noise type classes
+            Number of different noise types to classify
+
+        :param print_model_architecture: bool
+            Whether to print architecture of cycle-gan model components (discriminators & generators) or not
         """
-        super(NoiseTypeClassifier, self).__init__()
         if len(file_path_train_images) == 0:
             raise NoiseTypeClassifierException('No training images found')
         if len(file_path_validation_images) == 0:
             raise NoiseTypeClassifierException('No validation images found')
-        if len(file_path_model_output) == 0:
-            raise NoiseTypeClassifierException('No path for the trained model output found')
         self.file_path_train_images: str = file_path_train_images
         self.file_path_validation_images: str = file_path_validation_images
-        self.file_path_model_output: str = file_path_model_output
         self.learning_rate: float = learning_rate if learning_rate > 0 else 0.001
-        self.n_epoch: int = n_epoch if n_epoch > 0 else 10
         self.batch_size: int = batch_size if batch_size > 0 else 32
         self.image_height: int = image_height if image_height > 10 else 256
         self.image_width: int = image_width if image_width > 10 else 256
@@ -731,68 +824,241 @@ class NoiseTypeClassifier(Model):
         if n_noise_types < 2:
             raise NoiseTypeClassifierException(f'Not enough noise type classes ({n_noise_types})')
         self.n_noise_types: int = n_noise_types
-        # Build neural network model:
-        self.model: Sequential = Sequential()
-        # 1. Convolutional Layer:
-        self.model.add(Conv2D(32, (2, 2), input_shape=self.image_shape))
-        self.model.add(Activation('relu'))
-        self.model.add(MaxPooling2D(pool_size=(2, 2)))
-        # 2. Convolutional Layer:
-        self.model.add(Conv2D(32, (2, 2)))
-        self.model.add(Activation('relu'))
-        self.model.add(MaxPooling2D(pool_size=(2, 2)))
-        # 3. Convolutional Layer:
-        self.model.add(Conv2D(32, (2, 2)))
-        self.model.add(Activation('relu'))
-        self.model.add(MaxPooling2D(pool_size=(2, 2)))
-        # 4. Convolutional Layer:
-        self.model.add(Conv2D(64, (2, 2)))
-        self.model.add(Activation('relu'))
-        self.model.add(MaxPooling2D(pool_size=(2, 2)))
-        # 5. Convolutional Layer:
-        self.model.add(Conv2D(64, (2, 2)))
-        self.model.add(Activation('relu'))
-        self.model.add(MaxPooling2D(pool_size=(2, 2)))
-        # 6. Convolutional Layer:
-        self.model.add(Conv2D(64, (2, 2)))
-        self.model.add(Activation('relu'))
-        self.model.add(MaxPooling2D(pool_size=(2, 2)))
-        # 7. Convolutional Layer:
-        self.model.add(Conv2D(64, (2, 2)))
-        self.model.add(Activation('relu'))
-        self.model.add(MaxPooling2D(pool_size=(2, 2)))
-        # MLP Layer:
-        self.model.add(Flatten())
-        self.model.add(Dense(64))
-        self.model.add(Activation('relu'))
-        self.model.add(Dropout(0.5))
-        self.model.add(Dense(self.n_noise_types))
-        if self.n_noise_types == 2:
-            self.model.add(Activation('sigmoid'))
+        self.learning_rate: float = learning_rate if learning_rate > 0 else 0.001
+        if optimizer == 'rmsprop':
+            self.optimizer: RMSprop = RMSprop(learning_rate=self.learning_rate,
+                                              rho=0.9,
+                                              momentum=0.0,
+                                              epsilon=1e-7,
+                                              centered=False
+                                              )
+        elif optimizer == 'sgd':
+            self.optimizer: SGD = SGD(learning_rate=self.learning_rate,
+                                      momentum=0.0,
+                                      nesterov=False
+                                      )
         else:
-            self.model.add(Activation('softmax'))
+            self.optimizer: Adam = Adam(learning_rate=self.learning_rate,
+                                        beta_1=0.5,
+                                        beta_2=0.999,
+                                        epsilon=1e-7,
+                                        amsgrad=False
+                                        )
+        self.batch_size: int = batch_size if batch_size > 0 else 1
+        if self.batch_size == 1:
+            self.normalizer = InstanceNormalization
+        else:
+            self.normalizer = BatchNormalization
+        if initializer == 'constant':
+            self.initializer: keras.initializers.initializers_v2 = Constant(value=2)
+        elif initializer == 'he_normal':
+            self.initializer: keras.initializers.initializers_v2 = HeNormal(seed=1234)
+        elif initializer == 'he_uniform':
+            self.initializer: keras.initializers.initializers_v2 = HeUniform(seed=1234)
+        elif initializer == 'glorot_normal':
+            self.initializer: keras.initializers.initializers_v2 = GlorotNormal(seed=1234)
+        elif initializer == 'glorot_uniform':
+            self.initializer: keras.initializers.initializers_v2 = GlorotUniform(seed=1234)
+        elif initializer == 'lecun_normal':
+            self.initializer: keras.initializers.initializers_v2 = LecunNormal(seed=1234)
+        elif initializer == 'lecun_uniform':
+            self.initializer: keras.initializers.initializers_v2 = LecunUniform(seed=1234)
+        elif initializer == 'ones':
+            self.initializer: keras.initializers.initializers_v2 = Ones()
+        elif initializer == 'orthogonal':
+            self.initializer: keras.initializers.initializers_v2 = Orthogonal(gain=1.0, seed=1234)
+        elif initializer == 'random_normal':
+            self.initializer: keras.initializers.initializers_v2 = RandomNormal(mean=0.0, stddev=0.2, seed=1234)
+        elif initializer == 'random_uniform':
+            self.initializer: keras.initializers.initializers_v2 = RandomUniform(minval=-0.05, maxval=0.05, seed=1234)
+        elif initializer == 'truncated_normal':
+            self.initializer: keras.initializers.initializers_v2 = TruncatedNormal(mean=0.0, stddev=0.05, seed=1234)
+        elif initializer == 'zeros':
+            self.initializer: keras.initializers.initializers_v2 = Zeros()
+        self.start_n_filters: int = start_n_filters if start_n_filters > 0 else 32
+        self.up_sample_n_filters_period: int = up_sample_n_filters_period if up_sample_n_filters_period > 0 else 3
+        self.n_conv_layers: int = n_conv_layers if n_conv_layers > 0 else 3
+        self.dropout_rate_conv: float = dropout_rate_conv if dropout_rate_conv >= 0 else 0.0
+        self.fc_input_units: int = fc_input_units if fc_input_units > 0 else 64
+        self.dropout_rate_fc: float = dropout_rate_fc if dropout_rate_fc >= 0 else 0.0
+        self.print_model_architecture: bool = print_model_architecture
+        self.model: Model = None
+        # Load and preprocess image data (train & validation):
+        self.train_data_generator: ImageDataGenerator = ImageDataGenerator(rescale=1. / 255,
+                                                                           shear_range=0.0,
+                                                                           zoom_range=0.0,
+                                                                           horizontal_flip=True
+                                                                           )
+        self.validation_data_generator: ImageDataGenerator = ImageDataGenerator(rescale=1. / 255)
+        self.train_generator: DirectoryIterator = self.train_data_generator.flow_from_directory(directory=self.file_path_train_images,
+                                                                                                target_size=(self.image_width, self.image_height),
+                                                                                                batch_size=self.batch_size,
+                                                                                                class_mode='categorical'
+                                                                                                )
+        self.validation_generator: DirectoryIterator = self.validation_data_generator.flow_from_directory(directory=self.file_path_validation_images,
+                                                                                                          target_size=(self.image_width, self.image_height),
+                                                                                                          batch_size=self.batch_size,
+                                                                                                          class_mode='categorical'
+                                                                                                          )
+        self.model: Model = None
+        # Build neural network model:
+        self._build_clf_network()
 
-    def call(self, x):
-        return self.model(x)
+    def _build_clf_network(self):
+        """
+        Build classification model network
+        """
+        _input: Input = Input(shape=self.image_shape)
+        _n_filters: int = self.start_n_filters
+        _clf: keras_tensor.KerasTensor = Conv2D(filters=_n_filters,
+                                                kernel_size=(2, 2),
+                                                strides=(1, 1),
+                                                padding='valid',
+                                                kernel_initializer=self.initializer
+                                                )(_input)
+        _clf = ReLU(max_value=None, negative_slope=0, threshold=0)(_clf)
+        _clf = MaxPooling2D(pool_size=(2, 2),
+                            strides=None,
+                            padding='valid',
+                            data_format=None
+                            )(_clf)
+        # Convolutional Layers:
+        for i in range(0, self.n_conv_layers - 1, 1):
+            if (i + 1) % self.up_sample_n_filters_period == 0:
+                _n_filters *= 2
+            _clf = Conv2D(filters=_n_filters,
+                          kernel_size=(2, 2),
+                          strides=(1, 1),
+                          padding='valid',
+                          kernel_initializer=self.initializer
+                          )(_clf)
+            _clf = ReLU(max_value=None, negative_slope=0, threshold=0)(_clf)
+            if self.dropout_rate_conv > 0:
+                _clf = Dropout(rate=self.dropout_rate_conv, seed=1234)(_clf)
+            _clf = MaxPooling2D(pool_size=(2, 2),
+                                strides=None,
+                                padding='valid',
+                                data_format=None
+                                )(_clf)
+        # Fully Connected Layer:
+        _clf = Flatten()(_clf)
+        _clf = Dense(units=self.fc_input_units,
+                     activation=None,
+                     use_bias=True,
+                     kernel_initializer=self.initializer,
+                     bias_initializer='zeros',
+                     kernel_regularizer=None,
+                     bias_regularizer=None,
+                     activity_regularizer=None,
+                     kernel_constraint=None,
+                     bias_constraint=None
+                     )
+        _clf = ReLU(max_value=None, negative_slope=0, threshold=0)(_clf)
+        if self.dropout_rate_fc > 0:
+            _clf = Dropout(rate=self.dropout_rate_fc, seed=1234)(_clf)
+        _clf = Dense(units=self.n_noise_types,
+                     activation=None,
+                     use_bias=True,
+                     kernel_initializer=self.initializer,
+                     bias_initializer='zeros',
+                     kernel_regularizer=None,
+                     bias_regularizer=None,
+                     activity_regularizer=None,
+                     kernel_constraint=None,
+                     bias_constraint=None
+                     )(_clf)
+        if self.n_noise_types == 2:
+            # Binary Classification:
+            _clf = Activation('sigmoid')(_clf)
+        else:
+            # Multi Classification:
+            _clf = Activation('softmax')(_clf)
+        self.model = Model(inputs=_input, outputs=_clf, name='classifier')
+        if self.print_model_architecture:
+            self.model.summary()
+        self.model.compile(optimizer=self.optimizer,
+                           loss='categorical_crossentropy',
+                           metrics=[tf.keras.metrics.Accuracy(),
+                                    tf.keras.metrics.Recall(),
+                                    tf.keras.metrics.TruePositives(),
+                                    tf.keras.metrics.FalsePositives(),
+                                    tf.keras.metrics.TrueNegatives(),
+                                    tf.keras.metrics.FalseNegatives()
+                                    ],
+                           loss_weights=None,
+                           weighted_metrics=None,
+                           run_eagerly=None,
+                           steps_per_execution=None
+                           )
 
-    def train_step(self, data):
-        x, y = data
+    def _eval_training(self, file_path: str):
+        """
+        Evaluate current training by generating predictions based on test images
 
-        with tf.GradientTape() as tape:
-            y_pred = self(x)  # Forward pass
-            # Compute the loss value
-            # (the loss function is configured in `compile()`)
-            loss = self.compiled_loss(y, y_pred, regularization_losses=self.losses)
+        :param file_path: str
+            Complete file path to save test predictions
+        """
+        pass
 
-        # Compute gradients
-        trainable_vars = self.trainable_variables
-        gradients = tape.gradient(loss, trainable_vars)
-        # Update weights
-        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
-        # Update metrics (includes the metric that tracks the loss)
-        self.compiled_metrics.update_state(y, y_pred)
-        # Return a dict mapping metric names to current value
-        return {m.name: m.result() for m in self.metrics}
+    def _save_models(self, model_output_path: str):
+        """
+        Save cycle-gan models
+
+        :param model_output_path: str
+            Complete file path of the model output
+        """
+        self.model.save(filepath=os.path.join(model_output_path, 'noise_type_clf.h5'))
+
+    def train(self,
+              model_output_path: str,
+              n_epoch: int = 100,
+              early_stopping_patience: int = 0
+              ):
+        """
+        Train classifier network model
+
+        :param model_output_path: str
+            Complete file path of the model output
+
+        :param n_epoch: int
+            Number of epochs to train
+
+        :param early_stopping_patience: int
+            Number of unchanged gradient epoch intervals for early stopping
+        """
+        if early_stopping_patience > 0:
+            _callbacks: list = [EarlyStopping(monitor='val_loss',
+                                              min_delta=0,
+                                              patience=early_stopping_patience,
+                                              verbose=0,
+                                              mode='auto',
+                                              baseline=None,
+                                              restore_best_weights=False
+                                              )
+                                ]
+        else:
+            _callbacks: list = None
+        self.model.fit(x=self.train_generator,
+                       batch_size=self.batch_size,
+                       epochs=n_epoch,
+                       verbose='auto',
+                       callbacks=_callbacks,
+                       validation_split=0.0,
+                       validation_data=self.validation_generator,
+                       shuffle=True,
+                       class_weight=None,
+                       sample_weight=None,
+                       initial_epoch=0,
+                       steps_per_epoch=None,
+                       validation_steps=None,
+                       validation_batch_size=None,
+                       validation_freq=1,
+                       max_queue_size=10,
+                       workers=1,
+                       use_multiprocessing=False
+                       )
+        self._eval_training(file_path=model_output_path)
+        self._save_models(model_output_path=model_output_path)
 
 
 class ConstantPadding2D(Layer):

@@ -260,7 +260,7 @@ class ImageProcessor:
         :param images: np.array
             Images
         """
-        return images / (1 / 255)
+        return images * 255
 
     @staticmethod
     def _normalize(images: np.array) -> np.array:
@@ -270,7 +270,7 @@ class ImageProcessor:
         :param images: np.array
             Images
         """
-        return images * (1 / 255)
+        return images / 255
 
     def _read_image(self, file_path: str) -> np.array:
         """
@@ -296,9 +296,12 @@ class ImageProcessor:
                 _image = cv2.flip(src=_image, flipCode=_direction, dst=None)
         return _image
 
-    def load_batch(self) -> Tuple[np.array, np.array, List[int]]:
+    def load_batch(self, label: int = -1) -> Tuple[np.array, np.array, List[int]]:
         """
         Load batch images for each group (clean & noisy) separately
+
+        :param label: int
+            Number of noise type to load (multi noise images only)
 
         :return Tuple[np.array, np.array, List[str]]
             Arrays of clean & noisy images as well as noise labels
@@ -307,7 +310,10 @@ class ImageProcessor:
             _label: int = 0
             _file_paths_noisy: List[str] = glob(os.path.join('.', self.file_path_noisy_images, f'*{self.file_type}'))
         else:
-            _label: int = random.randint(a=0, b=len(self.file_path_multi_noisy_images) - 1)
+            if label >= 0:
+                _label: int = label
+            else:
+                _label: int = random.randint(a=0, b=len(self.file_path_multi_noisy_images) - 1)
             _file_paths_noisy: List[str] = glob(os.path.join('.', self.file_path_multi_noisy_images[_label], f'*{self.file_type}'))
         _file_paths_clean: List[str] = glob(os.path.join('.', self.file_path_clean_images, f'*{self.file_type}'))
         self.n_batches = int(min(len(_file_paths_clean), len(_file_paths_noisy)) / self.batch_size)
@@ -348,15 +354,25 @@ class ImageProcessor:
         else:
             return np.array(_images_clean), np.array(_images_noisy)
 
-    def load_images(self, n_images: int = None) -> Tuple[str, np.array]:
+    def load_images(self, n_images: int = None, label: int = None) -> Tuple[str, np.array]:
         """
         Load images without batching
+
+        :param n_images: int
+            Number of images
+
+        :param label: int
+            Label number
 
         :return Tuple[List[str], np.array]
             List of image file names & array of loaded images
         """
-        _images_path, _images_noisy = [], []
-        _file_paths_noisy: List[str] = glob(f'{self.file_path_noisy_images}/*')
+        _images_path: List[str] = []
+        _images_noisy: List[np.array] = []
+        if self.file_path_multi_noisy_images is None:
+            _file_paths_noisy: List[str] = glob(os.path.join('.', self.file_path_noisy_images, f'*{self.file_type}'))
+        else:
+            _file_paths_noisy: List[str] = glob(os.path.join('.', self.file_path_multi_noisy_images[label], f'*{self.file_type}'))
         if n_images is not None and n_images > 0:
             for i in range(0, n_images, 1):
                 _file_paths_noisy_sample: List[str] = np.random.choice(_file_paths_noisy, 1, replace=False)

@@ -53,21 +53,23 @@ class CycleGAN:
                  max_n_filters_discriminator: int = 512,
                  n_conv_layers_discriminator: int = 3,
                  dropout_rate_discriminator: float = 0.0,
-                 start_n_filters_generator: int = 64,
+                 start_n_filters_generator: int = 32,
                  max_n_filters_generator: int = 512,
                  up_sample_n_filters_period: int = 0,
                  generator_type: str = 'res',
-                 n_resnet_blocks: int = 9,
+                 n_res_net_blocks: int = 6,
                  n_conv_layers_generator_res_net: int = 2,
                  n_conv_layers_generator_u_net: int = 3,
                  dropout_rate_generator_res_net: float = 0.0,
                  dropout_rate_generator_down_sampling: float = 0.0,
                  dropout_rate_generator_up_sampling: float = 0.0,
-                 include_moe_layers: bool = True,
+                 include_moe_layers: bool = False,
                  start_n_filters_moe_embedder: int = 32,
                  n_conv_layers_moe_embedder: int = 7,
                  max_n_filters_embedder: int = 64,
                  dropout_rate_moe_embedder: float = 0.0,
+                 n_embedding_features: int = 64,
+                 gate_after_each_conv_res_net_block: bool = True,
                  n_hidden_layers_moe_fc_gated_net: int = 1,
                  n_hidden_layers_moe_fc_classifier: int = 1,
                  dropout_rate_moe_fc_gated_net: float = 0.0,
@@ -148,7 +150,7 @@ class CycleGAN:
                 -> u: U-Network architecture
                 -> resnet: Residual network architecture
 
-        :param n_resnet_blocks: int
+        :param n_res_net_blocks: int
             Number of residual network blocks to use
                 Common: -> 6, 9
 
@@ -176,8 +178,17 @@ class CycleGAN:
         :param n_conv_layers_moe_embedder: int
             Number of convolutional layers in discriminator network
 
+        :param max_n_filters_embedder: int
+            Maximum number of filters in embedder
+
         :param dropout_rate_moe_embedder: float
             Dropout rate used after each convolutional layer in mixture of experts embedder network
+
+        :param n_embedding_features: int
+            Number of embedding output features
+
+        :param gate_after_each_conv_res_net_block: bool
+            Whether to use gated network after each convolutional layer in residual network block or just in the end
 
         :param n_hidden_layers_moe_fc_gated_net: int
             Number of hidden layers of the fully connected gated network used to process mixture of experts embedding output
@@ -198,7 +209,7 @@ class CycleGAN:
             Whether to print architecture of cycle-gan model components (discriminators & generators) or not
 
         :param kwargs: dict
-            Key-word arguments for class ImageProcessor
+            Key-word arguments for class ImageProcessor and compiling model configuration
         """
         if len(file_path_train_clean_images) == 0:
             raise CycleGANException('File path for clean training document images is empty')
@@ -215,6 +226,7 @@ class CycleGAN:
         self.image_height: int = image_height if image_height > 0 else 256
         self.image_width: int = image_width if image_width > 0 else 256
         self.image_shape: tuple = tuple([self.image_width, self.image_height, self.n_channels])
+        self.normalize: bool = False if kwargs.get('normalize') is None else kwargs.get('normalize')
         self.learning_rate: float = learning_rate if learning_rate > 0 else 0.0002
         if optimizer == 'rmsprop':
             self.optimizer: RMSprop = RMSprop(learning_rate=self.learning_rate,
@@ -281,21 +293,24 @@ class CycleGAN:
             self.generator_type: str = 'u'
         self.n_conv_layers_generator_u_net: int = n_conv_layers_generator_u_net if n_conv_layers_generator_u_net > 0 else 3
         self.n_conv_layers_generator_res_net: int = n_conv_layers_generator_res_net if n_conv_layers_generator_res_net > 0 else 2
-        self.n_resnet_blocks: int = n_resnet_blocks if n_resnet_blocks > 0 else 9
+        self.n_res_net_blocks: int = n_res_net_blocks if n_res_net_blocks > 0 else 9
         self.dropout_rate_generator_res_net: float = dropout_rate_generator_res_net if dropout_rate_generator_res_net > 0 else 0.0
         self.dropout_rate_generator_down_sampling: float = dropout_rate_generator_down_sampling if dropout_rate_generator_down_sampling > 0 else 0.0
         self.dropout_rate_generator_up_sampling: float = dropout_rate_generator_up_sampling if dropout_rate_generator_up_sampling > 0 else 0.0
         self.include_moe_layers: bool = include_moe_layers
+        self.deep_moe_res_net_filters: int = self.start_n_filters_generator * self.n_conv_layers_generator_res_net * 2
         self.start_n_filters_moe_embedder: int = start_n_filters_moe_embedder if start_n_filters_moe_embedder > 0 else 32
         self.n_conv_layers_moe_embedder: int = n_conv_layers_moe_embedder if n_conv_layers_moe_embedder > 0 else 7
         self.max_n_filters_embedder: int = max_n_filters_embedder if max_n_filters_embedder > 0 else 64
         self.dropout_rate_moe_embedder: float = dropout_rate_moe_embedder if dropout_rate_moe_embedder > 0 else 0.0
+        self.n_embedding_features: int = n_embedding_features if n_embedding_features > 0 else 64
+        self.gate_after_each_conv_res_net_block: bool = gate_after_each_conv_res_net_block
         self.n_hidden_layers_moe_fc_gated_net: int = n_hidden_layers_moe_fc_gated_net if n_hidden_layers_moe_fc_gated_net > 0 else 1
         self.n_hidden_layers_moe_fc_classifier: int = n_hidden_layers_moe_fc_classifier if n_hidden_layers_moe_fc_classifier > 0 else 1
         self.dropout_rate_moe_fc_gated_net: float = dropout_rate_moe_fc_gated_net if dropout_rate_moe_fc_gated_net > 0 else 0.0
         self.n_noise_types_moe_fc_classifier: int = n_noise_types_moe_fc_classifier if n_noise_types_moe_fc_classifier > 0 else 4
         self.dropout_rate_moe_fc_classifier: float = dropout_rate_moe_fc_classifier if dropout_rate_moe_fc_classifier > 0 else 0.0
-        self.clf_label: int = 0
+        self.clf_label: int = None
         self.print_model_architecture: bool = print_model_architecture
         self.kwargs: dict = kwargs
         self.training_type: str = None
@@ -307,11 +322,13 @@ class CycleGAN:
         self.combined_model: Model = None
         self.embedder: Model = None
         self.gated_network: Model = None
+        self.noise_classifier: Model = None
         self.model_name: str = None
         self.training_time: str = None
         self.elapsed_time: List[str] = []
         self.epoch: List[int] = []
         self.batch: List[int] = []
+        self.label: List[int] = []
         self.discriminator_loss: List[float] = []
         self.discriminator_accuracy: List[float] = []
         self.generator_loss: List[float] = []
@@ -329,7 +346,7 @@ class CycleGAN:
                                                               n_channels=self.n_channels,
                                                               batch_size=self.batch_size,
                                                               image_resolution=(self.image_width, self.image_height),
-                                                              normalize=True if self.kwargs.get('normalize') is None else self.kwargs.get('normalize'),
+                                                              normalize=self.normalize,
                                                               flip=True if self.kwargs.get('flip') is None else self.kwargs.get('flip'),
                                                               crop=self.kwargs.get('crop')
                                                               )
@@ -388,16 +405,56 @@ class CycleGAN:
         self.discriminator_B = self._build_discriminator()
         if self.print_model_architecture:
             self.discriminator_A.summary()
-        self.discriminator_A.compile(loss='mse',
+        self.discriminator_A.compile(loss='mse' if self.kwargs.get('discriminator_loss') is None else self.kwargs.get('discriminator_loss'),
                                      optimizer=self.optimizer,
-                                     metrics=['accuracy'],
-                                     loss_weights=[0.5]
+                                     metrics=['accuracy'] if self.kwargs.get('discriminator_metrics') is None else self.kwargs.get('discriminator_metrics'),
+                                     loss_weights=[0.5] if self.kwargs.get('discriminator_loss_weights') is None else self.kwargs.get('discriminator_loss_weights')
                                      )
-        self.discriminator_B.compile(loss='mse',
+        self.discriminator_B.compile(loss='mse' if self.kwargs.get('discriminator_loss') is None else self.kwargs.get('discriminator_loss'),
                                      optimizer=self.optimizer,
-                                     metrics=['accuracy'],
-                                     loss_weights=[0.5]
+                                     metrics=['accuracy'] if self.kwargs.get('discriminator_metrics') is None else self.kwargs.get('discriminator_metrics'),
+                                     loss_weights=[0.5] if self.kwargs.get('discriminator_loss_weights') is None else self.kwargs.get('discriminator_loss_weights')
                                      )
+        # For the combined model we will only train the generators:
+        self.discriminator_A.trainable = False if self.kwargs.get('discriminator_trainable') is None else self.kwargs.get('discriminator_trainable')
+        self.discriminator_B.trainable = False if self.kwargs.get('discriminator_trainable') is None else self.kwargs.get('discriminator_trainable')
+        # Build and compile the mixture of experts layers (MoE):
+        if self.include_moe_layers:
+            # MoE - Noise Type Shallow Embedding Network:
+            self.embedder = self._moe_embedder()
+            self.embedder.compile(loss='mse' if self.kwargs.get('embedder_loss') is None else self.kwargs.get('embedder_loss'),
+                                  optimizer=self.optimizer,
+                                  metrics=['mse'] if self.kwargs.get('embedder_metrics') is None else self.kwargs.get('embedder_metrics')
+                                  )
+            self.embedder.trainable = True if self.kwargs.get('embedder_trainable') is None else self.kwargs.get('embedder_trainable')
+            _z = self.embedder(_image_B)
+            _clf = Dense(units=self.n_noise_types_moe_fc_classifier)(_z)
+            if self.n_noise_types_moe_fc_classifier == 2:
+                _clf = Activation('sigmoid')(_clf)
+            else:
+                _clf = Activation('softmax')(_clf)
+            self.noise_classifier = Model(inputs=_image_B, outputs=_clf, name='embedder')
+            self.noise_classifier.compile(loss=tf.keras.losses.CategoricalCrossentropy() if self.kwargs.get('classifier_loss') is None else self.kwargs.get('classifier_loss'),
+                                          optimizer=self.optimizer,
+                                          metrics=[tf.keras.metrics.Accuracy()] if self.kwargs.get('classifier_metrics') is None else self.kwargs.get('classifier_metrics')
+                                          )
+            self.noise_classifier.trainable = False if self.kwargs.get('classifier_trainable') is None else self.kwargs.get('classifier_trainable')
+            if self.print_model_architecture:
+                self.embedder.summary()
+            # MoE - Multi-Headed Sparse Gated network:
+            self.gated_network = self._moe_gated_network(input_layer=_image_B)
+            self.gated_network.compile(loss=tf.keras.losses.Huber() if self.kwargs.get('gated_network_loss') is None else self.kwargs.get('gated_network_loss'),
+                                       optimizer=self.optimizer,
+                                       metrics=[tf.keras.metrics.Accuracy()] if self.kwargs.get('gated_network_metrics') is None else self.kwargs.get('gated_network_metrics'),
+                                       )
+            _sparse_gates = self.gated_network(_image_B)
+            if self.print_model_architecture:
+                self.gated_network.summary()
+            self.gated_network.trainable = True if self.kwargs.get('gated_network_trainable') is None else self.kwargs.get('gated_network_trainable')
+        else:
+            _z = None
+            _noise_clf = None
+            _sparse_gates = None
         # Build the generators:
         self.model_name = 'generator_A'
         self.generator_A = self._build_generator()
@@ -405,24 +462,6 @@ class CycleGAN:
         self.generator_B = self._build_generator()
         if self.print_model_architecture:
             self.generator_A.summary()
-        # Build and compile the mixture of experts layers:
-        if self.include_moe_layers:
-            # MoE Embedding:
-            self.embedder.compile(loss=tf.keras.losses.CategoricalCrossentropy(),
-                                  optimizer=self.optimizer,
-                                  metrics=[tf.keras.metrics.Accuracy()],
-                                  )
-            if self.print_model_architecture:
-                self.embedder.summary()
-            # MoE Multi-Headed Sparse Gated Network:
-            self.gated_network.compile(loss=tf.keras.losses.Huber(),
-                                       optimizer=self.optimizer,
-                                       metrics=[tf.keras.metrics.Accuracy()],
-                                       )
-            if self.print_model_architecture:
-                self.gated_network.summary()
-            self.embedder.trainable = False
-            self.gated_network.trainable = False
         # Translate images to the other domain:
         _fake_B = self.generator_A(_image_B)
         _fake_A = self.generator_B(_image_A)
@@ -432,40 +471,72 @@ class CycleGAN:
         # Identity mapping of images:
         _image_id_A = self.generator_B(_image_A)
         _image_id_B = self.generator_A(_image_B)
-        # For the combined model we will only train the generators:
-        self.discriminator_A.trainable = False
-        self.discriminator_B.trainable = False
         # Discriminators determine validity of translated images:
         _valid_A = self.discriminator_A(_fake_A)
         _valid_B = self.discriminator_B(_fake_B)
         # Combined model to train generators to fool discriminators:
-        self.combined_model = Model(inputs=[_image_A,
-                                            _image_B
-                                            ],
-                                    outputs=[_valid_A,
-                                             _valid_B,
-                                             _reconstruction_A,
-                                             _reconstruction_B,
-                                             _image_id_A,
-                                             _image_id_B
-                                             ]
-                                    )
-        self.combined_model.compile(loss=['mse',
-                                          'mse',
-                                          'mae',
-                                          'mae',
-                                          'mae',
-                                          'mae'
-                                          ],
-                                    loss_weights=[1,
-                                                  1,
-                                                  self.lambda_cycle,
-                                                  self.lambda_cycle,
-                                                  self.lambda_id,
-                                                  self.lambda_id
-                                                  ],
-                                    optimizer=self.optimizer
-                                    )
+        if self.include_moe_layers:
+            self.combined_model = Model(inputs=[_image_A,
+                                                _image_B
+                                                ],
+                                        outputs=[_valid_A,
+                                                 _valid_B,
+                                                 _reconstruction_A,
+                                                 _reconstruction_B,
+                                                 _image_id_A,
+                                                 _image_id_B,
+                                                 _z,
+                                                 _sparse_gates
+                                                 ]
+                                        )
+            self.combined_model.compile(loss=['mse',
+                                              'mse',
+                                              'mae',
+                                              'mae',
+                                              'mae',
+                                              'mae',
+                                              'mse',
+                                              'mse'
+                                              ],
+                                        loss_weights=[1,
+                                                      1,
+                                                      self.lambda_cycle,
+                                                      self.lambda_cycle,
+                                                      self.lambda_id,
+                                                      self.lambda_id,
+                                                      1,
+                                                      1
+                                                      ],
+                                        optimizer=self.optimizer
+                                        )
+        else:
+            self.combined_model = Model(inputs=[_image_A,
+                                                _image_B
+                                                ],
+                                        outputs=[_valid_A,
+                                                 _valid_B,
+                                                 _reconstruction_A,
+                                                 _reconstruction_B,
+                                                 _image_id_A,
+                                                 _image_id_B
+                                                 ]
+                                        )
+            self.combined_model.compile(loss=['mse',
+                                              'mse',
+                                              'mae',
+                                              'mae',
+                                              'mae',
+                                              'mae'
+                                              ],
+                                        loss_weights=[1,
+                                                      1,
+                                                      self.lambda_cycle,
+                                                      self.lambda_cycle,
+                                                      self.lambda_id,
+                                                      self.lambda_id
+                                                      ],
+                                        optimizer=self.optimizer
+                                        )
 
     def _build_generator(self) -> Model:
         """
@@ -548,7 +619,6 @@ class CycleGAN:
             if self.dropout_rate_generator_up_sampling > 0:
                 _u = Dropout(rate=self.dropout_rate_generator_up_sampling, seed=1234)(_u)
             _u = Concatenate()([_u, skip_layer])
-            _u = ReLU(max_value=None, negative_slope=0, threshold=0)(_u)
         else:
             _u: keras_tensor.KerasTensor = UpSampling2D(size=(2, 2), interpolation='bilinear')(input_layer)
             _u = Conv2D(filters=n_filters,
@@ -566,7 +636,7 @@ class CycleGAN:
             _u = self.normalizer()(_u)
             if self.dropout_rate_generator_up_sampling > 0:
                 _u = Dropout(rate=self.dropout_rate_generator_up_sampling, seed=1234)(_u)
-            _u = ReLU(max_value=None, negative_slope=0, threshold=0)(_u)
+        _u = ReLU(max_value=None, negative_slope=0, threshold=0)(_u)
         return _u
 
     def _convolutional_layer_generator_encoder(self,
@@ -604,7 +674,7 @@ class CycleGAN:
     def _convolutional_layer_generator_embedder(self,
                                                 input_layer: keras_tensor.KerasTensor,
                                                 n_filters: int,
-                                                strides: tuple = (1, 1)
+                                                strides: tuple = (2, 2)
                                                 ) -> keras_tensor.KerasTensor:
         """
         Convolutional layer for embedding layer (mixture of experts)
@@ -631,8 +701,8 @@ class CycleGAN:
         if self.dropout_rate_moe_embedder > 0:
             _e = Dropout(rate=self.dropout_rate_moe_embedder)(_e)
         _e = ReLU(max_value=None, negative_slope=0, threshold=0)(_e)
-        _e = MaxPooling2D(pool_size=(2, 2))(_e)
-        _e = self.normalizer()(_e)
+        #_e = MaxPooling2D(pool_size=(2, 2))(_e)
+        #_e = self.normalizer()(_e)
         return _e
 
     def _deep_moe(self) -> Model:
@@ -644,18 +714,8 @@ class CycleGAN:
         """
         _input: Input = Input(shape=self.image_shape)
         _n_filters: int = self.start_n_filters_generator
-        # Noise Type Shallow Embedding Network:
-        _embedder = self._moe_embedder(input_layer=_input)
-        _clf = Dense(units=self.n_noise_types_moe_fc_classifier)(_embedder)
-        if self.n_noise_types_moe_fc_classifier == 2:
-            _clf = Activation('sigmoid')(_clf)
-        else:
-            _clf = Activation('softmax')(_clf)
-        self.embedder = Model(inputs=_input, outputs=_clf, name='embedder')
-        # Multi-Headed Sparse Gated network:
-        _gated = self._moe_gated_network(input_layer=_embedder)
-        self.gated_network = Model(inputs=_input, outputs=_gated, name='gated_network')
-        _g = ReflectionPadding2D(padding=(1, 1))(_input)
+        _sparse_gates: keras_tensor.KerasTensor = self.gated_network(_input)
+        _g: keras_tensor.KerasTensor = ReflectionPadding2D(padding=(1, 1))(_input)
         _g = Conv2D(filters=self.start_n_filters_generator,
                     kernel_size=(7, 7),
                     strides=(1, 1),
@@ -670,19 +730,12 @@ class CycleGAN:
                 _n_filters *= 2
             _g = self._convolutional_layer_generator_encoder(input_layer=_g, n_filters=_n_filters)
         # MoE Transformer - Base Convolutional Network (Gated Residual Network Blocks):
-        _g = self._moe_gated_residual_block(input_layer=_g,
-                                            sparse_gated_network=_gated,
-                                            n_filters=self.start_n_filters_generator
-                                            )
-        for _ in range(0, self.n_resnet_blocks - 1, 1):
-            _g = self._moe_gated_residual_block(input_layer=_g,
-                                                sparse_gated_network=_gated,
-                                                n_filters=_n_filters#self.start_n_filters_generator
-                                                )
+        for _ in range(0, self.n_res_net_blocks, 1):
+            _g = self._moe_gated_residual_block(input_layer=_g, sparse_gates=_sparse_gates)
         # Decoder (Up-Sampling):
         for _ in range(0, self.n_conv_layers_generator_res_net, 1):
             if _n_filters > self.start_n_filters_generator:
-                _n_filters //= 2
+                _n_filters /= 2
             _g = self._convolutional_layer_generator_decoder(input_layer=_g, skip_layer=None, n_filters=_n_filters)
         _g = ReflectionPadding2D(padding=(5, 5))(_g)
         _fake_image: keras_tensor.KerasTensor = Conv2D(filters=self.n_channels,
@@ -703,14 +756,15 @@ class CycleGAN:
         """
         _image_processor: ImageProcessor = ImageProcessor(file_path_clean_images='',
                                                           file_path_noisy_images=self.file_path_eval_noisy_data,
+                                                          file_path_multi_noisy_images=self.file_path_moe_noisy_images,
                                                           n_channels=self.n_channels,
                                                           batch_size=self.batch_size,
                                                           image_resolution=(self.image_width, self.image_height),
-                                                          normalize=True if self.kwargs.get('normalize') is None else self.kwargs.get('normalize'),
+                                                          normalize=self.normalize,
                                                           flip=False,
                                                           crop=self.kwargs.get('crop')
                                                           )
-        for image_noisy_file_path, image_noisy in _image_processor.load_images(n_images=1):
+        for image_noisy_file_path, image_noisy in _image_processor.load_images(n_images=1, label=self.clf_label):
             _fake_noisy: np.array = self.generator_A.predict(image_noisy)
             _output_file_path_fake: str = os.path.join(file_path,
                                                        f"test_fake_{image_noisy_file_path[0].split('/')[-1]}"
@@ -722,48 +776,50 @@ class CycleGAN:
             self.image_processor.save_image(image=np.array(image_noisy).squeeze(), output_file_path=_output_file_path_noisy)
             print(f'Save evaluation image: {_output_file_path_fake}')
 
-    def _moe_embedder(self, input_layer: keras_tensor.KerasTensor) -> keras_tensor.KerasTensor:
+    def _moe_embedder(self) -> Model:
         """
         Embedding (calculate latent feature vector z for mixture of experts architecture)
 
-        :param input_layer: keras_tensor.KerasTensor
-            Image
-
-        :return: keras_tensor.KerasTensor
-            Latent feature vector z (embedding)
+        :return: Model
+            Latent feature (embedding) model
         """
+        _input: Input = Input(shape=self.image_shape)
         _n_filters: int = self.start_n_filters_moe_embedder
-        _e: keras_tensor.KerasTensor = self._convolutional_layer_generator_embedder(input_layer=input_layer,
+        _e: keras_tensor.KerasTensor = self._convolutional_layer_generator_embedder(input_layer=_input,
                                                                                     n_filters=_n_filters
                                                                                     )
         for i in range(0, self.n_conv_layers_moe_embedder - 1, 1):
             if self.up_sample_n_filters_period > 0:
-                if i % self.up_sample_n_filters_period == 0:
+                if i + 1 % self.up_sample_n_filters_period == 0:
                     _n_filters += 2
             else:
                 _n_filters += 2
             _e = self._convolutional_layer_generator_embedder(input_layer=_e, n_filters=_n_filters)
         _e = Flatten()(_e)
-        _e = Dense(units=64)(_e)
+        _e = Dense(units=self.n_embedding_features)(_e)
         if self.dropout_rate_moe_embedder > 0:
             _e = Dropout(rate=self.dropout_rate_moe_embedder)(_e)
         _e = ReLU(max_value=None, negative_slope=0, threshold=0)(_e)
-        return _e
+        return Model(inputs=_input, outputs=_e, name='embedder')
 
-    def _moe_gated_network(self, input_layer: keras_tensor.KerasTensor, units: int = 64) -> keras_tensor.KerasTensor:
+    def _moe_gated_network(self,
+                           input_layer: keras_tensor.KerasTensor,
+                           input_units: int = 64
+                           ) -> Model:
         """
         Fully connected gated network layer (part of the mixture of experts architecture)
 
         :param input_layer: keras_tensor.KerasTensor
-            Mixture of experts embedding
+            Latent feature vector z (embedding)
 
-        :param units: int
-            Number of neurons
+        :param input_units: int
+            Number of neurons of the input layer
 
-        :return: keras_tensor.KerasTensor
-            Gated network logits
+        :return: Model
+            Gated network model
         """
-        _gate: keras_tensor.KerasTensor = Dense(units=units,
+        _z: keras_tensor.KerasTensor = self.embedder(input_layer)
+        _gate: keras_tensor.KerasTensor = Dense(units=input_units,
                                                 activation=None,
                                                 use_bias=True,
                                                 kernel_initializer=self.initializer,
@@ -773,12 +829,12 @@ class CycleGAN:
                                                 activity_regularizer=None,
                                                 kernel_constraint=None,
                                                 bias_constraint=None
-                                                )(input_layer)
+                                                )(_z)
         _gate = self.normalizer()(_gate)
         if self.dropout_rate_moe_fc_gated_net > 0:
             _gate = Dropout(rate=self.dropout_rate_moe_fc_gated_net)(_gate)
         _gate = ReLU(max_value=None, negative_slope=0, threshold=0)(_gate)
-        _gate = Dense(units=256,
+        _gate = Dense(units=self.deep_moe_res_net_filters,
                       activation=None,
                       use_bias=True,
                       kernel_initializer=self.initializer,
@@ -792,14 +848,13 @@ class CycleGAN:
         _gate = self.normalizer()(_gate)
         if self.dropout_rate_moe_fc_gated_net > 0:
             _gate = Dropout(rate=self.dropout_rate_moe_fc_gated_net)(_gate)
-        #_gate = ReLU(max_value=None, negative_slope=0, threshold=0)(_gate)
-        _gate = Activation('softmax')(_gate)
-        return _gate
+        _gate = ReLU(max_value=None, negative_slope=0, threshold=0)(_gate)
+        #_gate = Activation('softmax')(_gate)
+        return Model(inputs=input_layer, outputs=_gate, name='gated_network')
 
     def _moe_gated_residual_block(self,
                                   input_layer: keras_tensor.KerasTensor,
-                                  sparse_gated_network: keras_tensor.KerasTensor,
-                                  n_filters: int
+                                  sparse_gates: keras_tensor.KerasTensor
                                   ) -> keras_tensor.KerasTensor:
         """
         Gated residual block (mixture of experts convolutional layer)
@@ -807,17 +862,11 @@ class CycleGAN:
         :param input_layer: keras_tensor.KerasTensor
             Image
 
-        :param sparse_gated_network: keras_tensor.KerasTensor
-            Transformed latent mixture weights (output of the embedding) by the gated network
-
-        :param n_filters: int
-            Number of filters
-
         :return keras_tensor.KerasTensor
             Processed keras tensor
         """
         _r: keras_tensor.KerasTensor = ReflectionPadding2D(padding=(1, 1))(input_layer)
-        _r = Conv2D(filters=n_filters,
+        _r = Conv2D(filters=self.deep_moe_res_net_filters,
                     kernel_size=(3, 3),
                     strides=(1, 1),
                     padding='valid',
@@ -827,10 +876,11 @@ class CycleGAN:
         if self.dropout_rate_generator_res_net > 0:
             _r = Dropout(rate=self.dropout_rate_generator_res_net)(_r)
         _r = ReLU(max_value=None, negative_slope=0, threshold=0)(_r)
-        _r = Dense(units=256)(_r)
-        _r = Multiply()([_r, sparse_gated_network])
+        if self.gate_after_each_conv_res_net_block:
+            _r = Dense(units=self.deep_moe_res_net_filters)(_r)
+            _r = Multiply()([_r, sparse_gates])
         _r = ReflectionPadding2D(padding=(1, 1))(_r)
-        _r = Conv2D(filters=n_filters,
+        _r = Conv2D(filters=self.deep_moe_res_net_filters,
                     kernel_size=(3, 3),
                     strides=(1, 1),
                     padding='valid',
@@ -839,8 +889,8 @@ class CycleGAN:
         _r = self.normalizer()(_r)
         if self.dropout_rate_generator_res_net > 0:
             _r = Dropout(rate=self.dropout_rate_generator_res_net)(_r)
-        _r = Dense(units=256)(_r)
-        _r = Multiply()([_r, sparse_gated_network])
+        _r = Dense(units=self.deep_moe_res_net_filters)(_r)
+        _r = Multiply()([_r, sparse_gates])
         _r = ReflectionPadding2D(padding=(1, 1))(_r)
         _r = Add()([_r, input_layer])
         _r = ReLU(max_value=None, negative_slope=0, threshold=0)(_r)
@@ -871,7 +921,7 @@ class CycleGAN:
                     _n_filters *= 2
             _g = self._convolutional_layer_generator_encoder(input_layer=_g, n_filters=_n_filters)
         # Transformer (Residual Network Blocks):
-        for _ in range(0, self.n_resnet_blocks, 1):
+        for _ in range(0, self.n_res_net_blocks, 1):
             _g = self._residual_network_block(input_layer=_g, n_filters=_n_filters)
         # Decoder (Up-Sampling):
         for j in range(0, self.n_conv_layers_generator_res_net, 1):
@@ -944,11 +994,12 @@ class CycleGAN:
         if self.generator_type == 'u':
             _cycle_gan_architecture = f'{_cycle_gan_architecture}Generator: U-Network'
         else:
-            _cycle_gan_architecture = f'{_cycle_gan_architecture}Generator: Residual Network {self.n_resnet_blocks} Blocks'
+            _cycle_gan_architecture = f'{_cycle_gan_architecture}Generator: Residual Network {self.n_res_net_blocks} Blocks'
             if self.include_moe_layers:
                 _cycle_gan_architecture = f'{_cycle_gan_architecture} + Mixture of Experts Layers (MoE)'
         _cycle_gan_training_report: dict = dict(cycle_gan_architecture=_cycle_gan_architecture,
                                                 training_type=self.training_type,
+                                                label=self.label,
                                                 training_time=self.training_time,
                                                 elapsed_time=self.elapsed_time,
                                                 learning_rate=self.learning_rate,
@@ -997,7 +1048,7 @@ class CycleGAN:
         :return: Model
             U-network model
         """
-        _input: Input = Input(shape=(self.image_width, self.image_height, self.n_channels))
+        _input: Input = Input(shape=self.image_shape)
         _n_filters: int = self.start_n_filters_generator
         _g: keras_tensor.KerasTensor = Conv2D(filters=_n_filters,
                                               kernel_size=(3, 3),
@@ -1102,8 +1153,13 @@ class CycleGAN:
     def train(self,
               model_output_path: str,
               n_epoch: int = 300,
+              asynchron: bool = False,
+              discriminator_batch_size: int = 100,
+              generator_batch_size: int = 10,
+              early_stopping_batch: int = 0,
+              random_noise_types: bool = False,
               checkpoint_epoch_interval: int = 5,
-              evaluation_epoch_interval: int = 1,
+              evaluation_epoch_interval: int = 1
               ):
         """
         Train cycle-gan models
@@ -1114,6 +1170,21 @@ class CycleGAN:
         :param n_epoch: int
             Number of epochs to train
 
+        :param asynchron: bool
+            Whether to train discriminator and generator asynchron or synchron
+
+        :param discriminator_batch_size: int
+            Batch size of to update discriminator
+
+        :param generator_batch_size: int
+            Batch size of to update generator
+
+        :param early_stopping_batch: int
+            Number of batch to process before to stop epoch early
+
+        :param random_noise_types: bool
+            Whether to load images containing different noise types randomly or systematically (moe only)
+
         :param checkpoint_epoch_interval: int
             Number of epoch intervals for saving model checkpoint
 
@@ -1122,44 +1193,155 @@ class CycleGAN:
         """
         # Build Cycle-GAN Network:
         self._build_cycle_gan_network()
-        self.training_type = 'synchron'
         _t0: datetime = datetime.datetime.now()
+        _discriminator_batch_real_A: List[np.array] = []
+        _discriminator_batch_fake_A: List[np.array] = []
+        _discriminator_batch_real_B: List[np.array] = []
+        _discriminator_batch_fake_B: List[np.array] = []
+        _generator_batch_real: List[np.array] = []
+        _generator_batch_noisy: List[np.array] = []
+        _n_updates_discriminator: int = 0
+        _n_updates_generator: int = 0
+        _print_losses: bool = False
+        # Embedding loss ground truths:
+        _z: np.array = np.ones((self.batch_size, self.n_embedding_features))
+        # Gated network loss ground truths:
+        _sparse: np.array = np.ones((self.batch_size, self.deep_moe_res_net_filters))
         # Adversarial loss ground truths:
-        _valid: np.array = np.ones((self.batch_size, ) + self.discriminator_patch)
-        _fake: np.array = np.zeros((self.batch_size, ) + self.discriminator_patch)
+        if asynchron:
+            self.training_type = 'asynchron'
+            self.discriminator_batch_size = discriminator_batch_size if discriminator_batch_size > 0 else 50
+            self.generator_batch_size = generator_batch_size if generator_batch_size > 0 else 50
+            _valid: np.array = np.ones((1, ) + self.discriminator_patch)
+            _fake: np.array = np.zeros((1, ) + self.discriminator_patch)
+        else:
+            self.training_type = 'synchron'
+            _valid: np.array = np.ones((self.batch_size, ) + self.discriminator_patch)
+            _fake: np.array = np.zeros((self.batch_size, ) + self.discriminator_patch)
+        _label: int = -1
         for epoch in range(n_epoch):
-            for batch_i, (images_A, images_B, label) in enumerate(self.image_processor.load_batch()):
+            if not random_noise_types:
+                if _label + 1 == len(self.file_path_moe_noisy_images):
+                    _label = 0
+                else:
+                    _label += 1
+            for batch_i, (images_A, images_B, label) in enumerate(self.image_processor.load_batch(label=_label)):
+                self.clf_label = label
+                self.label.append(self.clf_label)
                 # Translate images to opposite domain:
                 _fake_B = self.generator_A.predict(x=images_B)
                 _fake_A = self.generator_B.predict(x=images_A)
-                # Train the discriminators (original images = real / translated = Fake):
-                _discriminator_loss_real_A = self.discriminator_A.train_on_batch(images_A, _valid)
-                _discriminator_loss_fake_A = self.discriminator_A.train_on_batch(_fake_A, _fake)
-                _discriminator_loss_A = 0.5 * np.add(_discriminator_loss_real_A, _discriminator_loss_fake_A)
-                _discriminator_loss_real_B = self.discriminator_B.train_on_batch(images_B, _valid)
-                _discriminator_loss_fake_B = self.discriminator_B.train_on_batch(_fake_B, _fake)
-                _discriminator_loss_B = 0.5 * np.add(_discriminator_loss_real_B, _discriminator_loss_fake_B)
-                # Total discriminator loss:
-                _discriminator_loss = 0.5 * np.add(_discriminator_loss_A, _discriminator_loss_B)
                 if self.include_moe_layers:
+                    if batch_i == 0:
+                        print(f'Noise Type Label: {label}')
                     # Embedding classifier loss:
-                    _label_encoding = [0.0] * self.n_noise_types_moe_fc_classifier
-                    _label_encoding[label] = 1.0
-                    _label = self.embedder.predict(x=images_A)
-                    #_embedding_clf_loss = self.embedder.train_on_batch(x=np.array([_label_encoding]), y=_label)
-                    # print(label, '-', _label)
-                # Train the generators:
-                _generator_loss = self.combined_model.train_on_batch([images_A,
-                                                                      images_B
-                                                                      ],
-                                                                     [_valid,
-                                                                      _valid,
-                                                                      images_A,
-                                                                      images_B,
-                                                                      images_A,
-                                                                      images_B
-                                                                      ]
-                                                                     )
+                    #_label_encoding = [0.0] * self.n_noise_types_moe_fc_classifier
+                    #_label_encoding[label] = 1.0
+                    _sparse_gated_loss: float = self.gated_network.train_on_batch(x=images_B, y=_sparse)
+                if asynchron:
+                    _discriminator_batch_real_A.append(images_A)
+                    _discriminator_batch_real_B.append(images_B)
+                    _generator_batch_real.append(images_A)
+                    _generator_batch_noisy.append(images_B)
+                    _discriminator_batch_fake_A.append(_fake_A)
+                    _discriminator_batch_fake_B.append(_fake_B)
+                    if len(_discriminator_batch_real_A) == self.discriminator_batch_size:
+                        _n_updates_discriminator += 1
+                        for (d_real_A, d_fake_A, d_real_B, d_fake_B) in zip(_discriminator_batch_real_A,
+                                                                            _discriminator_batch_fake_A,
+                                                                            _discriminator_batch_real_B,
+                                                                            _discriminator_batch_fake_B
+                                                                            ):
+                            # Train the discriminators (original images = real / translated = Fake):
+                            _discriminator_loss_real_A = self.discriminator_A.train_on_batch(d_real_A, _valid)
+                            _discriminator_loss_fake_A = self.discriminator_A.train_on_batch(d_fake_A, _fake)
+                            _discriminator_loss_A = 0.5 * np.add(_discriminator_loss_real_A, _discriminator_loss_fake_A)
+                            _discriminator_loss_real_B = self.discriminator_B.train_on_batch(d_real_B, _valid)
+                            _discriminator_loss_fake_B = self.discriminator_B.train_on_batch(d_fake_B, _fake)
+                            _discriminator_loss_B = 0.5 * np.add(_discriminator_loss_real_B, _discriminator_loss_fake_B)
+                            # Total discriminator loss:
+                            _discriminator_loss = 0.5 * np.add(_discriminator_loss_A, _discriminator_loss_B)
+                            self.discriminator_loss.append(round(_discriminator_loss[0], 8))
+                            self.discriminator_accuracy.append(round(100 * _discriminator_loss[1], 4))
+                        _discriminator_batch_real_A = []
+                        _discriminator_batch_real_B = []
+                        _discriminator_batch_fake_A = []
+                        _discriminator_batch_fake_B = []
+                        _print_losses = True
+                    if len(_generator_batch_real) == self.generator_batch_size:
+                        _n_updates_generator += 1
+                        for (g_real, g_noisy) in zip(_generator_batch_real, _generator_batch_noisy):
+                            # Train the generators:
+                            if self.include_moe_layers:
+                                _generator_loss = self.combined_model.train_on_batch([g_real,
+                                                                                      g_noisy
+                                                                                      ],
+                                                                                     [_valid,
+                                                                                      _valid,
+                                                                                      g_real,
+                                                                                      g_noisy,
+                                                                                      g_real,
+                                                                                      g_noisy,
+                                                                                      _z,
+                                                                                      _sparse
+                                                                                      ]
+                                                                                     )
+                            else:
+                                _generator_loss = self.combined_model.train_on_batch([g_real,
+                                                                                      g_noisy
+                                                                                      ],
+                                                                                     [_valid,
+                                                                                      _valid,
+                                                                                      g_real,
+                                                                                      g_noisy,
+                                                                                      g_real,
+                                                                                      g_noisy
+                                                                                      ]
+                                                                                     )
+                            self.generator_loss.append(round(_generator_loss[0], 8))
+                            self.adversarial_loss.append(round(np.mean(_generator_loss[1:3]), 8))
+                            self.reconstruction_loss.append(round(np.mean(_generator_loss[3:5]), 8))
+                            self.identy_loss.append(round(np.mean(_generator_loss[5:6]), 8))
+                        _generator_batch_real = []
+                        _generator_batch_noisy = []
+                        _print_losses = True
+                else:
+                    # Train the discriminators (original images = real / translated = Fake):
+                    _discriminator_loss_real_A = self.discriminator_A.train_on_batch(images_A, _valid)
+                    _discriminator_loss_fake_A = self.discriminator_A.train_on_batch(_fake_A, _fake)
+                    _discriminator_loss_A = 0.5 * np.add(_discriminator_loss_real_A, _discriminator_loss_fake_A)
+                    _discriminator_loss_real_B = self.discriminator_B.train_on_batch(images_B, _valid)
+                    _discriminator_loss_fake_B = self.discriminator_B.train_on_batch(_fake_B, _fake)
+                    _discriminator_loss_B = 0.5 * np.add(_discriminator_loss_real_B, _discriminator_loss_fake_B)
+                    # Total discriminator loss:
+                    _discriminator_loss = 0.5 * np.add(_discriminator_loss_A, _discriminator_loss_B)
+                    # Train the generators:
+                    if self.include_moe_layers:
+                        _generator_loss = self.combined_model.train_on_batch([images_A,
+                                                                              images_B
+                                                                              ],
+                                                                             [_valid,
+                                                                              _valid,
+                                                                              images_A,
+                                                                              images_B,
+                                                                              images_A,
+                                                                              images_B,
+                                                                              _z,
+                                                                              _sparse
+                                                                              ]
+                                                                             )
+                    else:
+                        _generator_loss = self.combined_model.train_on_batch([images_A,
+                                                                              images_B
+                                                                              ],
+                                                                             [_valid,
+                                                                              _valid,
+                                                                              images_A,
+                                                                              images_B,
+                                                                              images_A,
+                                                                              images_B
+                                                                              ]
+                                                                             )
                 _elapsed_time: datetime = datetime.datetime.now() - _t0
                 self.elapsed_time.append(str(_elapsed_time))
                 self.epoch.append(epoch)
@@ -1171,11 +1353,23 @@ class CycleGAN:
                 self.reconstruction_loss.append(round(np.mean(_generator_loss[3:5]), 8))
                 self.identy_loss.append(round(np.mean(_generator_loss[5:6]), 8))
                 # Print training progress:
-                _print_epoch_status: str = f'[Epoch: {epoch}/{n_epoch}]'
-                _print_batch_status: str = f'[Batch: {batch_i}/{self.image_processor.n_batches}]'
-                _print_discriminator_loss_status: str = f'[D loss: {self.discriminator_loss[-1]}, acc: {self.discriminator_accuracy[-1]}]'
-                _print_generator_loss_status: str = f'[G loss: {self.generator_loss[-1]}, adv: {self.adversarial_loss[-1]}, recon: {self.reconstruction_loss[-1]}, id: {self.identy_loss[-1]}]'
-                print(_print_epoch_status, _print_batch_status, _print_discriminator_loss_status, _print_generator_loss_status, f'time: {_elapsed_time}')
+                if asynchron:
+                    if _print_losses and len(self.discriminator_loss) > 0 and len(self.generator_loss) > 0:
+                        _print_epoch_status: str = f'[Epoch: {epoch}/{n_epoch}]'
+                        _print_batch_status: str = f'[Batch: {batch_i}/{self.image_processor.n_batches}]'
+                        _print_discriminator_loss_status: str = f'[D loss: {self.discriminator_loss[-1]}, acc: {self.discriminator_accuracy[-1]}]'
+                        _print_generator_loss_status: str = f'[G loss: {self.generator_loss[-1]}, adv: {self.adversarial_loss[-1]}, recon: {self.reconstruction_loss[-1]}, id: {self.identy_loss[-1]}]'
+                        print(_print_epoch_status, _print_batch_status, _print_discriminator_loss_status, _print_generator_loss_status, f'time: {_elapsed_time}')
+                        _print_losses = False
+                else:
+                    _print_epoch_status: str = f'[Epoch: {epoch}/{n_epoch}]'
+                    _print_batch_status: str = f'[Batch: {batch_i}/{self.image_processor.n_batches}]'
+                    _print_discriminator_loss_status: str = f'[D loss: {self.discriminator_loss[-1]}, acc: {self.discriminator_accuracy[-1]}]'
+                    _print_generator_loss_status: str = f'[G loss: {self.generator_loss[-1]}, adv: {self.adversarial_loss[-1]}, recon: {self.reconstruction_loss[-1]}, id: {self.identy_loss[-1]}]'
+                    print(_print_epoch_status, _print_batch_status, _print_discriminator_loss_status, _print_generator_loss_status, f'time: {_elapsed_time}')
+                if early_stopping_batch > 0:
+                    if batch_i + 1 == early_stopping_batch:
+                        break
             # Save checkpoint:
             if checkpoint_epoch_interval > 0:
                 if (epoch % checkpoint_epoch_interval == 0) and (epoch > 0):
@@ -1184,7 +1378,6 @@ class CycleGAN:
             if self.file_path_eval_noisy_data is not None and len(self.file_path_eval_noisy_data) > 0:
                 if epoch % evaluation_epoch_interval == 0:
                     self._eval_training(file_path=model_output_path)
-
         # Save fully trained models:
         self._save_models(model_output_path=model_output_path)
         # Save training report:
@@ -1196,6 +1389,7 @@ class CycleGAN:
                         n_epoch: int = 300,
                         discriminator_batch_size: int = 100,
                         generator_batch_size: int = 10,
+                        early_stopping_batch: int = 0,
                         checkpoint_epoch_interval: int = 5,
                         evaluation_epoch_interval: int = 1,
                         ):
@@ -1214,6 +1408,9 @@ class CycleGAN:
         :param generator_batch_size: int
             Batch size of to update generator
 
+        :param early_stopping_batch: int
+            Number of batch to process before to stop epoch early
+
         :param checkpoint_epoch_interval: int
             Number of epoch intervals for saving model checkpoint
 
@@ -1226,6 +1423,10 @@ class CycleGAN:
         self.discriminator_batch_size = discriminator_batch_size if discriminator_batch_size > 0 else 50
         self.generator_batch_size = generator_batch_size if generator_batch_size > 0 else 50
         _t0: datetime = datetime.datetime.now()
+        # Embedding loss ground truths:
+        _z: np.array = np.ones((self.batch_size, 64))
+        # Gated network loss ground truths:
+        _sparse: np.array = np.ones((self.batch_size, 128))
         # Adversarial loss ground truths:
         _valid: np.array = np.ones((1,) + self.discriminator_patch)
         _fake: np.array = np.zeros((1,) + self.discriminator_patch)
@@ -1240,6 +1441,12 @@ class CycleGAN:
         _print_losses: bool = False
         for epoch in range(n_epoch):
             for batch_i, (images_A, images_B, label) in enumerate(self.image_processor.load_batch()):
+                self.clf_label = label
+                if self.include_moe_layers:
+                    # Embedding classifier loss:
+                    _label_encoding = [0.0] * self.n_noise_types_moe_fc_classifier
+                    _label_encoding[label] = 1.0
+                    _sparse_gated_loss: float = self.gated_network.train_on_batch(x=images_B, y=_sparse)
                 _discriminator_batch_real_A.append(images_A)
                 _discriminator_batch_real_B.append(images_B)
                 _generator_batch_real.append(images_A)
@@ -1276,15 +1483,32 @@ class CycleGAN:
                     _n_updates_generator += 1
                     for (g_real,  g_noisy) in zip(_generator_batch_real, _generator_batch_noisy):
                         # Train the generators:
-                        _generator_loss = self.combined_model.train_on_batch([g_real, g_noisy],
-                                                                             [_valid,
-                                                                              _valid,
-                                                                              g_real,
-                                                                              g_noisy,
-                                                                              g_real,
-                                                                              g_noisy
-                                                                              ]
-                                                                             )
+                        if self.include_moe_layers:
+                            _generator_loss = self.combined_model.train_on_batch([g_real,
+                                                                                  g_noisy
+                                                                                  ],
+                                                                                 [_valid,
+                                                                                  _valid,
+                                                                                  g_real,
+                                                                                  g_noisy,
+                                                                                  g_real,
+                                                                                  g_noisy,
+                                                                                  _z,
+                                                                                  _sparse
+                                                                                  ]
+                                                                                 )
+                        else:
+                            _generator_loss = self.combined_model.train_on_batch([g_real,
+                                                                                  g_noisy
+                                                                                  ],
+                                                                                 [_valid,
+                                                                                  _valid,
+                                                                                  g_real,
+                                                                                  g_noisy,
+                                                                                  g_real,
+                                                                                  g_noisy
+                                                                                  ]
+                                                                                 )
                         self.generator_loss.append(round(_generator_loss[0], 8))
                         self.adversarial_loss.append(round(np.mean(_generator_loss[1:3]), 8))
                         self.reconstruction_loss.append(round(np.mean(_generator_loss[3:5]), 8))
@@ -1305,6 +1529,9 @@ class CycleGAN:
                     print(_print_epoch_status, _print_batch_status, _print_discriminator_loss_status,
                           _print_generator_loss_status, f'time: {_elapsed_time}')
                     _print_losses = False
+                    if early_stopping_batch > 0:
+                        if batch_i == early_stopping_batch:
+                            break
             # Save checkpoint:
             if checkpoint_epoch_interval > 0:
                 if (epoch % checkpoint_epoch_interval == 0) and (epoch > 0):

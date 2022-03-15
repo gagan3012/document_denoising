@@ -674,7 +674,7 @@ class CycleGAN:
     def _convolutional_layer_generator_embedder(self,
                                                 input_layer: keras_tensor.KerasTensor,
                                                 n_filters: int,
-                                                strides: tuple = (2, 2)
+                                                strides: tuple = (1, 1)
                                                 ) -> keras_tensor.KerasTensor:
         """
         Convolutional layer for embedding layer (mixture of experts)
@@ -701,8 +701,8 @@ class CycleGAN:
         if self.dropout_rate_moe_embedder > 0:
             _e = Dropout(rate=self.dropout_rate_moe_embedder)(_e)
         _e = ReLU(max_value=None, negative_slope=0, threshold=0)(_e)
-        #_e = MaxPooling2D(pool_size=(2, 2))(_e)
-        #_e = self.normalizer()(_e)
+        _e = MaxPooling2D(pool_size=(2, 2))(_e)
+        _e = self.normalizer()(_e)
         return _e
 
     def _deep_moe(self) -> Model:
@@ -791,9 +791,9 @@ class CycleGAN:
         for i in range(0, self.n_conv_layers_moe_embedder - 1, 1):
             if self.up_sample_n_filters_period > 0:
                 if i + 1 % self.up_sample_n_filters_period == 0:
-                    _n_filters += 2
+                    _n_filters *= 2
             else:
-                _n_filters += 2
+                _n_filters *= 2
             _e = self._convolutional_layer_generator_embedder(input_layer=_e, n_filters=_n_filters)
         _e = Flatten()(_e)
         _e = Dense(units=self.n_embedding_features)(_e)
@@ -849,7 +849,6 @@ class CycleGAN:
         if self.dropout_rate_moe_fc_gated_net > 0:
             _gate = Dropout(rate=self.dropout_rate_moe_fc_gated_net)(_gate)
         _gate = ReLU(max_value=None, negative_slope=0, threshold=0)(_gate)
-        #_gate = Activation('softmax')(_gate)
         return Model(inputs=input_layer, outputs=_gate, name='gated_network')
 
     def _moe_gated_residual_block(self,

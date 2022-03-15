@@ -79,12 +79,116 @@ class TestCycleGAN(unittest.TestCase):
         _cycle_gan: CycleGAN = CycleGAN(file_path_train_clean_images=FILE_PATH_CLEAN_IMAGES,
                                         file_path_train_noisy_images=FILE_PATH_NOISY_IMAGES,
                                         n_channels=1,
+                                        batch_size=1,
                                         generator_type='res',
                                         n_resnet_blocks=9,
                                         n_conv_layers_generator_res_net=0,
                                         include_moe_layers=True
                                         )
         _cycle_gan.train(model_output_path='./data/results_res_net9_moe', n_epoch=_n_epoch, checkpoint_epoch_interval=5)
+        self.assertTrue(expr=round(len(_cycle_gan.generator_loss) / _cycle_gan.image_processor.n_batches, 0) == _n_epoch)
+
+    def test_train_asynchron_u_net(self):
+        """
+        Test asynchronously cycle-gan model training (u-network as generator)
+        """
+        _n_epoch: int = 25
+        _cycle_gan: CycleGAN = CycleGAN(file_path_train_clean_images=FILE_PATH_CLEAN_IMAGES,
+                                        file_path_train_noisy_images=FILE_PATH_NOISY_IMAGES,
+                                        n_channels=1,
+                                        batch_size=1,
+                                        generator_type='u'
+                                        )
+        _cycle_gan.train_asynchron(model_output_path='./data/results_u_net_asynchron',
+                                   n_epoch=_n_epoch,
+                                   discriminator_batch_size=50,
+                                   generator_batch_size=30,
+                                   checkpoint_epoch_interval=5
+                                   )
+        self.assertTrue(expr=round(len(_cycle_gan.generator_loss) / _cycle_gan.image_processor.n_batches, 0) == _n_epoch)
+
+    def test_train_asynchron_res_net6(self):
+        """
+        Test asynchronously cycle-gan model training (residual network 6 blocks as generator)
+        """
+        _n_epoch: int = 25
+        _cycle_gan: CycleGAN = CycleGAN(file_path_train_clean_images=FILE_PATH_CLEAN_IMAGES,
+                                        file_path_train_noisy_images=FILE_PATH_NOISY_IMAGES,
+                                        n_channels=1,
+                                        batch_size=1,
+                                        generator_type='res',
+                                        n_resnet_blocks=6
+                                        )
+        _cycle_gan.train_asynchron(model_output_path='./data/results_res_net6_asynchron',
+                                   n_epoch=_n_epoch,
+                                   discriminator_batch_size=50,
+                                   generator_batch_size=30,
+                                   checkpoint_epoch_interval=5
+                                   )
+        self.assertTrue(expr=round(len(_cycle_gan.generator_loss) / _cycle_gan.image_processor.n_batches, 0) == _n_epoch)
+
+    def test_train_asynchron_res_net9(self):
+        """
+        Test asynchronously cycle-gan model training (residual network 9 blocks as generator)
+        """
+        _n_epoch: int = 25
+        _cycle_gan: CycleGAN = CycleGAN(file_path_train_clean_images=FILE_PATH_CLEAN_IMAGES,
+                                        file_path_train_noisy_images=FILE_PATH_NOISY_IMAGES,
+                                        n_channels=1,
+                                        batch_size=1,
+                                        generator_type='res',
+                                        n_resnet_blocks=9
+                                        )
+        _cycle_gan.train_asynchron(model_output_path='./data/results_res_net9_asynchron',
+                                   n_epoch=_n_epoch,
+                                   discriminator_batch_size=50,
+                                   generator_batch_size=30,
+                                   checkpoint_epoch_interval=5
+                                   )
+        self.assertTrue(expr=round(len(_cycle_gan.generator_loss) / _cycle_gan.image_processor.n_batches, 0) == _n_epoch)
+
+    def test_train_asynchron_res_net6_moe(self):
+        """
+        Test asynchronously cycle-gan model training (residual network 6 blocks and mixture of experts layer as generator)
+        """
+        _n_epoch: int = 25
+        _cycle_gan: CycleGAN = CycleGAN(file_path_train_clean_images=FILE_PATH_CLEAN_IMAGES,
+                                        file_path_train_noisy_images=FILE_PATH_NOISY_IMAGES,
+                                        n_channels=1,
+                                        batch_size=1,
+                                        generator_type='res',
+                                        n_resnet_blocks=6,
+                                        include_moe_layers=True,
+                                        n_conv_layers_generator_res_net=0
+                                        )
+        _cycle_gan.train_asynchron(model_output_path='./data/results_res_net6_asynchron',
+                                   n_epoch=_n_epoch,
+                                   discriminator_batch_size=50,
+                                   generator_batch_size=30,
+                                   checkpoint_epoch_interval=5
+                                   )
+        self.assertTrue(expr=round(len(_cycle_gan.generator_loss) / _cycle_gan.image_processor.n_batches, 0) == _n_epoch)
+
+    def test_train_asynchron_res_net9_moe(self):
+        """
+        Test asynchronously cycle-gan model training (residual network 9 blocks and mixture of experts layer as generator)
+        """
+        _n_epoch: int = 25
+        _cycle_gan: CycleGAN = CycleGAN(file_path_train_clean_images=FILE_PATH_CLEAN_IMAGES,
+                                        file_path_train_noisy_images=FILE_PATH_NOISY_IMAGES,
+                                        n_channels=1,
+                                        batch_size=1,
+                                        generator_type='res',
+                                        n_resnet_blocks=9,
+                                        include_moe_layers=True,
+                                        n_conv_layers_generator_res_net=0
+                                        )
+        _cycle_gan.train_asynchron(model_output_path='./data/results_res_net9_asynchron',
+                                   n_epoch=_n_epoch,
+                                   discriminator_batch_size=50,
+                                   generator_batch_size=30,
+                                   checkpoint_epoch_interval=5
+                                   )
         self.assertTrue(expr=round(len(_cycle_gan.generator_loss) / _cycle_gan.image_processor.n_batches, 0) == _n_epoch)
 
     def test_inference(self):

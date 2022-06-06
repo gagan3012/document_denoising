@@ -2,7 +2,7 @@
 Build & train cycle-gan model for document image denoising using unpaired images (Generative Adversarial Network)
 """
 
-from document_denoising.utils import ImageProcessor, ReflectionPadding2D
+from document_denoising.document_denoising.utils import ImageProcessor, ReflectionPadding2D
 from keras_contrib.layers.normalization.instancenormalization import InstanceNormalization
 from keras.engine import keras_tensor
 from keras.initializers.initializers_v2 import (
